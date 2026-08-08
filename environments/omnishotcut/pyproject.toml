@@ -1,0 +1,29 @@
+[project]
+name = "aic-omnishotcut-runtime"
+version = "0.1.0"
+requires-python = ">=3.10,<3.11"
+dependencies = [
+    "ffmpeg-python>=0.2.0",
+    "imageio-ffmpeg>=0.6.0",
+    "kagglehub>=0.3.13",
+    "omnishotcut",
+    "pandas>=2.2",
+    "pyarrow>=18.0",
+    "sentencepiece>=0.2.0",
+    "torch==2.6.0",
+    "torchvision==0.21.0",
+    "torchscale==0.2.0",
+]
+
+[tool.uv.sources]
+omnishotcut = { path = "../../third_party/OmniShotCut", editable = true }
+torch = { index = "pytorch-cu124" }
+torchvision = { index = "pytorch-cu124" }
+
+[[tool.uv.index]]
+name = "pytorch-cu124"
+url = "https://download.pytorch.org/whl/cu124"
+explicit = true
+
+[tool.uv]
+package = false
