@@ -33,6 +33,12 @@ paying its cost on every stride sample.
 
 See `workspace/benchmarks/BENCHMARK_SUMMARY.md` for measurements and ETA.
 
+The latest three-video benchmark projects 85.7 hours on the RTX 4060 before
+margin, or 4.46 days with a 25% operational margin. Ideal four-GPU compute is
+21.4 hours before transfer and host I/O overhead. These estimates cover the
+130.66 hours currently present on disk, not video files that have not yet been
+downloaded.
+
 ## Scheduler
 
 The scheduler stores state in `workspace/scheduler/jobs.sqlite3`. SQLite uses
