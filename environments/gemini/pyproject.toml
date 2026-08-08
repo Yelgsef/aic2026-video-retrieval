@@ -1,0 +1,13 @@
+[project]
+name = "aic-gemini-scene"
+version = "0.1.0"
+requires-python = ">=3.11,<3.13"
+dependencies = [
+  "google-genai>=1.0.0",
+  "pandas>=2.2.0",
+  "pillow>=10.0.0",
+  "pyarrow>=15.0.0",
+  "pydantic>=2.0.0",
+  "python-dotenv>=1.0.0",
+]
+
