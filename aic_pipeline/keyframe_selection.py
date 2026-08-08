@@ -127,6 +127,7 @@ def select_video_keyframes(
     global_within_shot_cosine: float | None = None,
     single_cluster_max_distance: float = 0.08,
     force: bool = False,
+    report_output_path: Path | None = None,
 ) -> dict[str, Any]:
     started = time.time()
     feature_dir = paths.features / encoder_id
@@ -137,7 +138,7 @@ def select_video_keyframes(
     selected_path = output_dir / f"{video_id}.parquet"
     audit_path = output_dir / f"{video_id}.audit.parquet"
     compact_path = output_dir / f"{video_id}.f16.npy"
-    report_path = paths.reports / f"keyframes_{video_id}.json"
+    report_path = report_output_path or paths.reports / f"keyframes_{video_id}.json"
     if selected_path.exists() and not force:
         raise FileExistsError(f"Output exists: {selected_path}. Use --force to rebuild.")
 
