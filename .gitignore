@@ -1,0 +1,70 @@
+# Secrets
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+
+# Python and local environments
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.venv/
+**/.venv/
+.pdf_tools/
+.ipynb_checkpoints/
+
+# AIC dataset, generated artifacts, and checkpoints
+archive/
+workspace/
+models/
+
+# Large media/model files
+*.mp4
+*.mkv
+*.avi
+*.mov
+*.wav
+*.mp3
+*.jpg
+*.jpeg
+*.png
+*.pt
+*.pth
+*.ckpt
+*.bin
+*.safetensors
+*.pdiparams
+*.onnx
+*.npz
+*.npy
+
+# Stages after BEiT-3 keyframe selection are intentionally not in the first milestone
+environments/asr/
+environments/siglip2/
+aic_pipeline/siglip_retrieval.py
+aic_pipeline/text_embeddings.py
+scripts/build_siglip2_index.py
+scripts/build_siglip2_sample_index.py
+scripts/query_siglip2.py
+scripts/evaluate_siglip2_retrieval.py
+scripts/evaluate_hybrid_retrieval.py
+scripts/evaluate_multiscale_retrieval.py
+scripts/build_object_text_index.py
+scripts/transcribe_faster_whisper.py
+
+# Local tooling and generated notebooks
+.claude/
+tools/
+third_party/*
+*.executed.ipynb
+
+# OS and editors
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
+*.log
+*.tmp
