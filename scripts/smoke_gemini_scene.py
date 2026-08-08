@@ -53,7 +53,7 @@ def make_contact_sheet(rows: pd.DataFrame, output: Path, max_images: int) -> lis
         tiles.append(canvas)
         metadata.append({"label": label, "frame_id": int(row.frame_id), "pts_time": float(row.pts_time)})
 
-    columns = 2
+    columns = min(2, len(tiles))
     rows_count = (len(tiles) + columns - 1) // columns
     sheet = Image.new("RGB", (columns * tile_width, rows_count * (tile_height + label_height)), "#dddddd")
     for index, tile in enumerate(tiles):
@@ -69,6 +69,10 @@ def main() -> None:
     parser.add_argument("--shot-id", type=int, default=27)
     parser.add_argument("--max-images", type=int, default=8)
     parser.add_argument("--model", default="gemini-3.6-flash")
+    parser.add_argument(
+        "--media-resolution", choices=("auto", "low", "medium", "high"), default="auto"
+    )
+    parser.add_argument("--thinking-budget", type=int)
     args = parser.parse_args()
 
     load_dotenv(ROOT / ".env")
@@ -97,15 +101,28 @@ Rules:
 """
 
     client = genai.Client(api_key=api_key)
+    media_resolution = {
+        "auto": None,
+        "low": types.MediaResolution.MEDIA_RESOLUTION_LOW,
+        "medium": types.MediaResolution.MEDIA_RESOLUTION_MEDIUM,
+        "high": types.MediaResolution.MEDIA_RESOLUTION_HIGH,
+    }[args.media_resolution]
+    config_kwargs = {
+        "response_mime_type": "application/json",
+        "response_schema": SceneDescription,
+        "temperature": 0.1,
+    }
+    if media_resolution is not None:
+        config_kwargs["media_resolution"] = media_resolution
+    if args.thinking_budget is not None:
+        config_kwargs["thinking_config"] = types.ThinkingConfig(
+            thinking_budget=args.thinking_budget
+        )
     with Image.open(sheet_path) as image:
         response = client.models.generate_content(
             model=args.model,
             contents=[prompt, image.copy()],
-            config=types.GenerateContentConfig(
-                response_mime_type="application/json",
-                response_schema=SceneDescription,
-                temperature=0.1,
-            ),
+            config=types.GenerateContentConfig(**config_kwargs),
         )
     parsed = SceneDescription.model_validate_json(response.text)
     usage = response.usage_metadata
@@ -113,6 +130,8 @@ Rules:
         "video_id": args.video_id,
         "shot_id": args.shot_id,
         "model": args.model,
+        "media_resolution": args.media_resolution,
+        "thinking_budget": args.thinking_budget,
         "contact_sheet": str(sheet_path),
         "frames": frames,
         "description": parsed.model_dump(),
