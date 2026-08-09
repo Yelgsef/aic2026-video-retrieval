@@ -243,7 +243,47 @@ cuối cùng.
 | Text reranking | BGE Reranker v2 M3 | Đã build và smoke test |
 | Optional visual-language reranking | VLM top-N | Chưa build |
 
-## 9. Trạng thái chạy trên dataset
+## 8.1. Persistent query service
+
+Query service giữ SigLIP2 SO400M, BGE-M3 và BGE Reranker v2 M3 trong bộ nhớ
+thay vì reload theo từng query:
+
+```powershell
+uv run --project environments/siglip2 python scripts/serve_offline_query.py
+```
+
+API cục bộ:
+
+```text
+GET  http://127.0.0.1:8765/health
+POST http://127.0.0.1:8765/query
+Body: {"query": "...", "top_k": 100, "rerank_k": 30}
+```
+
+Smoke benchmark RTX 4060 trên index L21_V001:
+
+- Load ba model: khoảng 21,5 giây một lần.
+- Warm visual query: khoảng 0,09 giây.
+- Warm ASR query có reranker: khoảng 0,27–0,48 giây.
+- HTTP query đầu tiên: khoảng 1,8 giây do CUDA warm-up.
+- VRAM giữ model: khoảng 4,58 GB.
+
+Service chỉ bind `127.0.0.1`, không mở ra mạng ngoài.
+
+## 9. Strong validation review
+
+Tạo contact sheets và CSV để gắn strong labels:
+
+```powershell
+uv run --project environments/siglip2 python scripts/build_validation_review_pack.py `
+  --video-id L21_V001 --scenes-per-video 10
+```
+
+Mở `workspace/validation/review_pack/index.html` để xem và điền
+`annotations.csv`. Weak labels lấy từ mốc 30 giây chỉ dùng smoke test, không
+dùng để chọn model hoặc fusion weights.
+
+## 10. Trạng thái chạy trên dataset
 
 - Code visual pipeline đã build tới final SO400M embeddings.
 - Code Whisper ASR và semantic-scene merging đã build.
@@ -255,7 +295,7 @@ cuối cùng.
 - Scheduler có SQLite state, resume, retry, shard và artifact validation.
 - Scheduler hiện vẫn cần persistent GPU workers để tránh reload model theo video.
 
-## 10. Kết quả smoke test L21_V001
+## 11. Kết quả smoke test L21_V001
 
 - Thời lượng khoảng 21 phút.
 - 352 technical shots.
@@ -266,7 +306,7 @@ cuối cùng.
 - Offline index: 115 scenes, 704 SO400M keyframe vectors, dimension 1152.
 - BGE-M3 index: 115 scene-text vectors, dimension 1024.
 
-## 11. Thứ tự build tiếp theo
+## 12. Thứ tự build tiếp theo
 
 1. Submit một Gemini validation batch và chạy parser đã có trên responses thật.
 2. Xây strong validation labels; weak 30-second labels hiện không đủ để tuning.
@@ -277,7 +317,7 @@ cuối cùng.
 7. Chạy validation subset trước, sau đó mới chạy toàn dataset.
 8. Xây Query API và giao diện tìm kiếm.
 
-## 12. Nguyên tắc không được bỏ qua
+## 13. Nguyên tắc không được bỏ qua
 
 - Không gọi weighted RRF baseline là model-based multimodal fusion.
 - Không gọi FTS5 đơn thuần là Vector-Fuzzy Fusion hoàn chỉnh.
