@@ -241,7 +241,9 @@ cuối cùng.
 | Fuzzy OCR/entity retrieval | Character n-gram + RapidFuzz | Đã build |
 | Query intent/expansion | Transformer + rule fallback | Rule fallback + concept expansion đã build |
 | Text reranking | BGE Reranker v2 M3 | Đã build và smoke test |
-| Optional visual-language reranking | VLM top-N | Chưa build |
+| Q&A visual answering | Hybrid top-24 + Gemini contact sheet | Đã build; cần validation đa video |
+| TRAKE temporal alignment | SigLIP2 Base stride-5 + dynamic programming | Đã build baseline |
+| Optional local visual-language reranking | VLM top-N | Chưa build |
 
 ## 8.1. Persistent query service
 
@@ -258,6 +260,8 @@ API cục bộ:
 GET  http://127.0.0.1:8765/health
 POST http://127.0.0.1:8765/route
 POST http://127.0.0.1:8765/query
+POST http://127.0.0.1:8765/answer
+POST http://127.0.0.1:8765/trake
 Body: {"query": "...", "top_k": 100, "rerank_k": 30}
 ```
 
@@ -275,6 +279,18 @@ Query response hiện có `task_plan`, candidate results và tối đa 100 submi
 cho KIS. Router phân biệt `KIS`, `QA` và `TRAKE`. Q&A submissions được đánh dấu
 `requires_vqa=true`; TRAKE được đánh dấu `requires_temporal_alignment=true` để
 không vô tình nộp output chưa hoàn chỉnh.
+
+Q&A dùng hybrid retrieval lấy ít nhất 24 candidate scenes, giải mã một
+representative frame cho mỗi candidate, ghép contact sheet 4 cột và gọi Gemini
+để vừa chọn evidence frame vừa trả lời ngắn. Lời gọi mạng có timeout 45 giây,
+retry giới hạn và fallback model để không treo query service vô hạn.
+
+TRAKE tách query thành các sự kiện có thứ tự, truy hồi từng sự kiện độc lập để
+chọn video có coverage đầy đủ, sau đó dùng SigLIP2 Base trên toàn bộ sampled
+frames stride-5 và dynamic programming để tìm chuỗi frame tăng nghiêm ngặt.
+Vì dùng stride 5, sai lệch chỉ do lưới sampling tối đa là 4 frame. Smoke test
+trên `L21_V001` trả chuỗi `3278 -> 10102 -> 14286` đúng thứ tự. Đây là baseline
+temporal alignment, chưa phải kết quả đã tune trên TRAKE validation thật.
 
 ## 9. Strong validation review
 
@@ -299,6 +315,11 @@ uv run --project environments/gemini python scripts/auto_label_validation_pack.p
 
 Pack hiện tại có 50 pseudo-label trên L21_V001: 38 KIS, 12 Q&A, confidence
 trung bình 0,948. Đây chưa phải strong validation đa video.
+
+Đánh giá retrieval trên 50 pseudo-label này: Recall@1 = 0,14; Recall@5 = 0,58;
+Recall@10 = 0,78; Recall@20 = 0,84; Recall@50 = 0,88; Recall@100 = 1,00;
+warm latency trung bình khoảng 0,253 giây/query. Các số này chỉ dùng phát hiện
+lỗi pipeline vì nhãn do Gemini tạo và toàn bộ mẫu chỉ thuộc một video.
 
 ## 10. Trạng thái chạy trên dataset
 

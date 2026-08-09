@@ -9,6 +9,8 @@ dependencies = [
     "pillow>=11.0",
   "pyarrow>=18.0",
   "rapidfuzz>=3.10",
+  "google-genai>=1.0",
+  "python-dotenv>=1.0",
     "safetensors>=0.5",
     "sentencepiece>=0.2",
     "torch==2.6.0",
