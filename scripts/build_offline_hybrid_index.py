@@ -3,6 +3,7 @@ from __future__ import annotations
 import argparse
 import json
 import sqlite3
+import unicodedata
 from pathlib import Path
 
 import numpy as np
@@ -17,6 +18,15 @@ SOURCE_ENCODER = "google_siglip2_base_patch16_224"
 def normalize(vector: np.ndarray) -> np.ndarray:
     vector = np.asarray(vector, dtype=np.float32)
     return vector / max(float(np.linalg.norm(vector)), 1e-12)
+
+
+def character_ngrams(text: str, size: int = 3) -> str:
+    text = unicodedata.normalize("NFKD", text.casefold())
+    text = "".join(char for char in text if not unicodedata.combining(char))
+    compact = " ".join("".join(char if char.isalnum() else " " for char in text).split())
+    return " ".join(sorted({compact[index:index + size].replace(" ", "_")
+                            for index in range(max(0, len(compact) - size + 1))
+                            if len(compact[index:index + size].strip()) == size}))
 
 
 def main() -> None:
@@ -35,12 +45,15 @@ def main() -> None:
     for video_id in video_ids:
         try:
             scenes = pd.read_parquet(scene_root / video_id / "scenes.parquet").sort_values("scene_index")
+            document_path = ROOT / "workspace" / "scene_documents" / video_id / "scenes.parquet"
+            documents = pd.read_parquet(document_path).set_index("document_id") if document_path.exists() else None
             index_dir = ROOT / "workspace" / "retrieval" / SO_ENCODER / f"{video_id}_final_from_{SOURCE_ENCODER}"
             metadata = pd.read_parquet(index_dir / "metadata.parquet").reset_index(drop=True)
             embeddings = np.load(index_dir / "embeddings.npy", mmap_mode="r")
             if len(metadata) != len(embeddings):
                 raise ValueError("SO400M metadata/embedding row mismatch")
             for scene in scenes.itertuples(index=False):
+                document = documents.loc[str(scene.scene_id)] if documents is not None and str(scene.scene_id) in documents.index else None
                 mask = (metadata.frame_id >= int(scene.start_frame)) & (metadata.frame_id < int(scene.end_frame_exclusive))
                 positions = np.flatnonzero(mask.to_numpy())
                 if not len(positions):
@@ -65,9 +78,14 @@ def main() -> None:
                     "shot_count": int(scene.shot_count),
                     "representative_frame_ids": [int(value) for value in scene.representative_frame_ids],
                     "visual_embedding_count": int(len(positions)),
-                    "asr_text": str(scene.asr_exact or ""),
-                    "asr_context": str(scene.asr_context or ""),
-                    "retrieval_text": " ".join(filter(None, [str(scene.asr_exact or ""), str(scene.asr_context or "")])),
+                    "asr_text": str(document.asr_text if document is not None else scene.asr_exact or ""),
+                    "asr_context": str(document.asr_context if document is not None else scene.asr_context or ""),
+                    "visual_summary": str(document.visual_summary if document is not None else ""),
+                    "ocr_text": list(document.ocr_text) if document is not None else [],
+                    "entities_text": " ".join(str(value) for field in ("people", "objects", "actions", "locations", "events", "search_keywords")
+                                              for value in (document[field] if document is not None else [])),
+                    "retrieval_text": str(document.retrieval_text if document is not None else " ".join(
+                        filter(None, [str(scene.asr_exact or ""), str(scene.asr_context or "")]))),
                 })
                 vectors.append(pooled)
         except (OSError, ValueError, KeyError) as exc:
@@ -90,12 +108,18 @@ def main() -> None:
     connection = sqlite3.connect(temporary)
     connection.execute("PRAGMA journal_mode=WAL")
     connection.execute("CREATE TABLE scenes(row_id INTEGER PRIMARY KEY, document_id TEXT UNIQUE, video_id TEXT, scene_index INTEGER, start_time REAL, end_time REAL, representative_frame_ids TEXT)")
-    connection.execute("CREATE VIRTUAL TABLE scene_fts USING fts5(document_id UNINDEXED, asr_text, asr_context, retrieval_text, tokenize='unicode61 remove_diacritics 2')")
+    connection.execute("CREATE VIRTUAL TABLE scene_fts USING fts5(document_id UNINDEXED, asr_text, asr_context, visual_summary, ocr_text, entities_text, retrieval_text, tokenize='unicode61 remove_diacritics 2')")
+    connection.execute("CREATE VIRTUAL TABLE fuzzy_fts USING fts5(document_id UNINDEXED, grams, tokenize='unicode61')")
     connection.executemany("INSERT INTO scenes VALUES(?,?,?,?,?,?,?)", [
         (r["row_id"], r["document_id"], r["video_id"], r["scene_index"], r["start_time"], r["end_time"], json.dumps(r["representative_frame_ids"])) for r in rows
     ])
-    connection.executemany("INSERT INTO scene_fts(rowid,document_id,asr_text,asr_context,retrieval_text) VALUES(?,?,?,?,?)", [
-        (r["row_id"] + 1, r["document_id"], r["asr_text"], r["asr_context"], r["retrieval_text"]) for r in rows
+    connection.executemany("INSERT INTO scene_fts(rowid,document_id,asr_text,asr_context,visual_summary,ocr_text,entities_text,retrieval_text) VALUES(?,?,?,?,?,?,?,?)", [
+        (r["row_id"] + 1, r["document_id"], r["asr_text"], r["asr_context"], r["visual_summary"],
+         " ".join(r["ocr_text"]), r["entities_text"], r["retrieval_text"]) for r in rows
+    ])
+    connection.executemany("INSERT INTO fuzzy_fts(rowid,document_id,grams) VALUES(?,?,?)", [
+        (r["row_id"] + 1, r["document_id"], character_ngrams(" ".join(r["ocr_text"]) + " " + r["entities_text"] + " " + r["retrieval_text"]))
+        for r in rows
     ])
     connection.commit()
     connection.close()

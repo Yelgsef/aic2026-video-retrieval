@@ -50,11 +50,11 @@ Shot + Final Keyframes + ASR
      Chưa submit toàn dataset
       |
       v
-[12] Multi-Modal Semantic Fusion Engine              CHƯA BUILD ĐẦY ĐỦ
+[12] Multi-Modal Semantic Fusion Engine              BASELINE ĐÃ BUILD
       |
       v
-[13] Multi-Stage Hybrid Retrieval                    BASELINE
-     Vector-Fuzzy Fusion chưa đầy đủ
+[13] Multi-Stage Hybrid Retrieval                    BASELINE ĐÃ BUILD
+     Vector-Fuzzy Fusion có intent-aware weights
       |
       v
 [14] Model-Based Multimodal Reranking                CHƯA BUILD
@@ -119,7 +119,8 @@ offline vẫn có thể tạo index từ SigLIP2 và Whisper khi chưa có kết
 
 ## 5. Multi-Modal Semantic Fusion Engine
 
-Đây là stage bắt buộc và hiện chưa được build đầy đủ.
+Schema, parser và scene-document builder đã được build. Hiện nó chạy được khi
+chỉ có ASR và tự bổ sung Gemini fields sau khi Batch responses xuất hiện.
 
 ```text
 Mỗi semantic scene
@@ -220,9 +221,10 @@ Max keyframe score theo semantic scene
 Video + scene + timestamp + representative frame IDs
 ```
 
-Baseline hiện chưa có BGE-M3, RapidFuzz, query-intent model, bilingual query
-expansion hoặc BGE reranker. Vì vậy baseline dùng để xác nhận data flow và
-mapping, chưa phải chất lượng retrieval cuối cùng.
+Baseline hiện đã có BGE-M3 dense vectors, SQLite FTS5, character-trigram fuzzy
+candidates và rule-based query intent. Nó chưa có bilingual query expansion,
+learned intent model, RapidFuzz edit-distance reranking hoặc BGE reranker. Vì
+vậy đây vẫn chưa phải chất lượng retrieval cuối cùng.
 
 ## 8. Model inventory
 
@@ -233,10 +235,10 @@ mapping, chưa phải chất lượng retrieval cuối cùng.
 | Final image embedding | SigLIP2 SO400M 384 | Đã build |
 | ASR | Whisper large-v3 | Đã build |
 | OCR/caption/entities | Gemini Batch | Generator đã build, chưa chạy toàn dataset |
-| Text semantic embedding | BGE-M3 | Chưa build |
+| Text semantic embedding | BGE-M3 | Đã build và smoke test trên L21_V001 |
 | Full-text retrieval | SQLite FTS5/BM25 | ASR baseline đã build |
-| Fuzzy OCR/entity retrieval | RapidFuzz + char n-gram | Chưa build |
-| Query intent/expansion | Transformer + rule fallback | Chưa build |
+| Fuzzy OCR/entity retrieval | Character n-gram | Baseline đã build |
+| Query intent/expansion | Transformer + rule fallback | Rule fallback đã build |
 | Text reranking | BGE Reranker v2 M3 | Chưa build |
 | Optional visual-language reranking | VLM top-N | Chưa build |
 
@@ -246,6 +248,7 @@ mapping, chưa phải chất lượng retrieval cuối cùng.
 - Code Whisper ASR và semantic-scene merging đã build.
 - Code Gemini contact-sheet/Batch JSONL đã build nhưng chưa submit toàn dataset.
 - Offline hybrid baseline đã smoke test trên `L21_V001`.
+- BGE-M3 checkpoint đã được lưu tại `models/bge-m3`.
 - Chưa chạy production trên toàn bộ khoảng 1.600 video.
 - Scheduler có SQLite state, resume, retry, shard và artifact validation.
 - Scheduler hiện vẫn cần persistent GPU workers để tránh reload model theo video.
@@ -259,21 +262,19 @@ mapping, chưa phải chất lượng retrieval cuối cùng.
 - 462 representative frames dùng chuẩn bị contact sheets.
 - 115 Gemini Batch requests, khoảng 15,1 MB JSONL.
 - Offline index: 115 scenes, 704 SO400M keyframe vectors, dimension 1152.
+- BGE-M3 index: 115 scene-text vectors, dimension 1024.
 
 ## 11. Thứ tự build tiếp theo
 
-1. Xây parser cho Gemini Batch responses.
-2. Xây Unified Multimodal Scene Document schema có provenance.
-3. Thêm BGE-M3 text embeddings và global text-vector index.
-4. Thêm RapidFuzz/character n-gram cho OCR và entity search.
-5. Xây query intent classification và query expansion Việt-Anh.
-6. Hoàn thiện intent-aware Vector-Fuzzy Fusion.
-7. Tích hợp BGE Reranker v2 M3.
-8. Chạy Recall@K, MRR, temporal hit rate và latency benchmark.
-9. Chuyển SigLIP2/Whisper sang persistent GPU workers.
-10. Tích hợp toàn bộ stage vào resumable production scheduler.
-11. Chạy validation subset trước, sau đó mới chạy toàn dataset.
-12. Xây Query API và giao diện tìm kiếm.
+1. Submit một Gemini validation batch và chạy parser đã có trên responses thật.
+2. Bổ sung RapidFuzz edit-distance reranking cho fuzzy candidates.
+3. Xây transformer query intent và query expansion Việt-Anh.
+4. Tích hợp BGE Reranker v2 M3.
+5. Chạy Recall@K, MRR, temporal hit rate và latency benchmark.
+6. Chuyển SigLIP2/Whisper sang persistent GPU workers.
+7. Tích hợp toàn bộ stage vào resumable production scheduler.
+8. Chạy validation subset trước, sau đó mới chạy toàn dataset.
+9. Xây Query API và giao diện tìm kiếm.
 
 ## 12. Nguyên tắc không được bỏ qua
 
