@@ -12,6 +12,7 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 
 from aic_pipeline.offline_search_engine import OfflineSearchEngine
+from aic_pipeline.task_router import route_query
 
 
 def main() -> None:
@@ -42,6 +43,14 @@ def main() -> None:
                 self.send_json(404, {"error": "not_found"})
 
         def do_POST(self) -> None:  # noqa: N802
+            if self.path == "/route":
+                try:
+                    length = int(self.headers.get("Content-Length", "0"))
+                    request = json.loads(self.rfile.read(length))
+                    self.send_json(200, route_query(str(request["query"])).to_dict())
+                except (ValueError, KeyError, TypeError, json.JSONDecodeError) as exc:
+                    self.send_json(400, {"error": str(exc)})
+                return
             if self.path != "/query":
                 self.send_json(404, {"error": "not_found"})
                 return

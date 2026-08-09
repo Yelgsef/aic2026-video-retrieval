@@ -256,6 +256,7 @@ API cục bộ:
 
 ```text
 GET  http://127.0.0.1:8765/health
+POST http://127.0.0.1:8765/route
 POST http://127.0.0.1:8765/query
 Body: {"query": "...", "top_k": 100, "rerank_k": 30}
 ```
@@ -270,6 +271,11 @@ Smoke benchmark RTX 4060 trên index L21_V001:
 
 Service chỉ bind `127.0.0.1`, không mở ra mạng ngoài.
 
+Query response hiện có `task_plan`, candidate results và tối đa 100 submissions
+cho KIS. Router phân biệt `KIS`, `QA` và `TRAKE`. Q&A submissions được đánh dấu
+`requires_vqa=true`; TRAKE được đánh dấu `requires_temporal_alignment=true` để
+không vô tình nộp output chưa hoàn chỉnh.
+
 ## 9. Strong validation review
 
 Tạo contact sheets và CSV để gắn strong labels:
@@ -282,6 +288,17 @@ uv run --project environments/siglip2 python scripts/build_validation_review_pac
 Mở `workspace/validation/review_pack/index.html` để xem và điền
 `annotations.csv`. Weak labels lấy từ mốc 30 giây chỉ dùng smoke test, không
 dùng để chọn model hoặc fusion weights.
+
+Khi chưa thể review thủ công, Gemini auto-labeler có thể tạo pseudo-label có
+frame evidence và resume cache. Các nhãn này luôn giữ `verified=false`:
+
+```powershell
+uv run --project environments/gemini python scripts/auto_label_validation_pack.py `
+  --pack workspace/validation/review_pack_50
+```
+
+Pack hiện tại có 50 pseudo-label trên L21_V001: 38 KIS, 12 Q&A, confidence
+trung bình 0,948. Đây chưa phải strong validation đa video.
 
 ## 10. Trạng thái chạy trên dataset
 
