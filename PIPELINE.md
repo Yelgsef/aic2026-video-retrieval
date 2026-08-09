@@ -222,9 +222,10 @@ Video + scene + timestamp + representative frame IDs
 ```
 
 Baseline hiện đã có BGE-M3 dense vectors, SQLite FTS5, character-trigram fuzzy
-candidates và rule-based query intent. Nó chưa có bilingual query expansion,
-learned intent model, RapidFuzz edit-distance reranking hoặc BGE reranker. Vì
-vậy đây vẫn chưa phải chất lượng retrieval cuối cùng.
+candidates, RapidFuzz reranking, rule-based query intent, Việt-Anh concept
+expansion và BGE Reranker v2 M3. Nó chưa có learned intent model hoặc một model
+dịch/query-expansion tổng quát. Vì vậy đây vẫn chưa phải chất lượng retrieval
+cuối cùng.
 
 ## 8. Model inventory
 
@@ -237,9 +238,9 @@ vậy đây vẫn chưa phải chất lượng retrieval cuối cùng.
 | OCR/caption/entities | Gemini Batch | Generator đã build, chưa chạy toàn dataset |
 | Text semantic embedding | BGE-M3 | Đã build và smoke test trên L21_V001 |
 | Full-text retrieval | SQLite FTS5/BM25 | ASR baseline đã build |
-| Fuzzy OCR/entity retrieval | Character n-gram | Baseline đã build |
-| Query intent/expansion | Transformer + rule fallback | Rule fallback đã build |
-| Text reranking | BGE Reranker v2 M3 | Chưa build |
+| Fuzzy OCR/entity retrieval | Character n-gram + RapidFuzz | Đã build |
+| Query intent/expansion | Transformer + rule fallback | Rule fallback + concept expansion đã build |
+| Text reranking | BGE Reranker v2 M3 | Đã build và smoke test |
 | Optional visual-language reranking | VLM top-N | Chưa build |
 
 ## 9. Trạng thái chạy trên dataset
@@ -249,6 +250,7 @@ vậy đây vẫn chưa phải chất lượng retrieval cuối cùng.
 - Code Gemini contact-sheet/Batch JSONL đã build nhưng chưa submit toàn dataset.
 - Offline hybrid baseline đã smoke test trên `L21_V001`.
 - BGE-M3 checkpoint đã được lưu tại `models/bge-m3`.
+- BGE Reranker v2 M3 đã được lưu tại `models/bge-reranker-v2-m3`.
 - Chưa chạy production trên toàn bộ khoảng 1.600 video.
 - Scheduler có SQLite state, resume, retry, shard và artifact validation.
 - Scheduler hiện vẫn cần persistent GPU workers để tránh reload model theo video.
@@ -267,14 +269,13 @@ vậy đây vẫn chưa phải chất lượng retrieval cuối cùng.
 ## 11. Thứ tự build tiếp theo
 
 1. Submit một Gemini validation batch và chạy parser đã có trên responses thật.
-2. Bổ sung RapidFuzz edit-distance reranking cho fuzzy candidates.
-3. Xây transformer query intent và query expansion Việt-Anh.
-4. Tích hợp BGE Reranker v2 M3.
-5. Chạy Recall@K, MRR, temporal hit rate và latency benchmark.
-6. Chuyển SigLIP2/Whisper sang persistent GPU workers.
-7. Tích hợp toàn bộ stage vào resumable production scheduler.
-8. Chạy validation subset trước, sau đó mới chạy toàn dataset.
-9. Xây Query API và giao diện tìm kiếm.
+2. Xây strong validation labels; weak 30-second labels hiện không đủ để tuning.
+3. Xây transformer query intent và model-based query expansion Việt-Anh.
+4. Chạy Recall@K, MRR, temporal hit rate và latency benchmark đầy đủ.
+5. Chuyển SigLIP2/Whisper sang persistent GPU workers.
+6. Tích hợp toàn bộ stage vào resumable production scheduler.
+7. Chạy validation subset trước, sau đó mới chạy toàn dataset.
+8. Xây Query API và giao diện tìm kiếm.
 
 ## 12. Nguyên tắc không được bỏ qua
 

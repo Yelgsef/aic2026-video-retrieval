@@ -15,20 +15,28 @@ import numpy as np
 import pandas as pd
 import torch
 from transformers import AutoModel, AutoProcessor
+from rapidfuzz import fuzz
+
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+from aic_pipeline.query_understanding import build_query_plan
 
 
 ROOT = Path(__file__).resolve().parents[1]
 
 
-def text_embedding(text: str, model_id: str) -> np.ndarray:
+def text_embeddings(texts: list[str], model_id: str) -> np.ndarray:
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     dtype = torch.float16 if device.type == "cuda" else torch.float32
     processor = AutoProcessor.from_pretrained(model_id, local_files_only=True, use_fast=False)
     model = AutoModel.from_pretrained(model_id, dtype=dtype, local_files_only=True).to(device).eval()
-    inputs = processor(text=[text], padding="max_length", max_length=64, return_tensors="pt").to(device)
+    inputs = processor(text=texts, padding="max_length", max_length=64, return_tensors="pt").to(device)
     with torch.inference_mode():
-        vector = model.get_text_features(**inputs).float().cpu().numpy()[0]
-    return vector / max(float(np.linalg.norm(vector)), 1e-12)
+        vectors = model.get_text_features(**inputs).float().cpu().numpy()
+    output = vectors / np.maximum(np.linalg.norm(vectors, axis=1, keepdims=True), 1e-12)
+    del model
+    if device.type == "cuda":
+        torch.cuda.empty_cache()
+    return output
 
 
 def fts_candidates(database: Path, query: str, limit: int) -> list[int]:
@@ -66,13 +74,10 @@ def fuzzy_candidates(database: Path, query: str, limit: int) -> list[int]:
         )]
 
 
-def query_intent(query: str) -> dict[str, float | str]:
-    value = query.casefold()
-    ocr_words = ("chữ", "dòng chữ", "biển báo", "logo", "văn bản", "màn hình", "tiêu đề", "ghi")
-    asr_words = ("nói", "phát biểu", "đề cập", "lời", "nghe", "phỏng vấn", "thông báo")
-    if any(word in value for word in ocr_words):
+def query_intent(intent: str) -> dict[str, float | str]:
+    if intent == "ocr":
         return {"intent": "ocr", "visual": 1.0, "lexical": 1.5, "fuzzy": 1.5, "semantic": 1.0}
-    if any(word in value for word in asr_words):
+    if intent == "asr":
         return {"intent": "asr", "visual": 0.75, "lexical": 1.75, "fuzzy": 0.5, "semantic": 1.5}
     return {"intent": "visual", "visual": 2.0, "lexical": 0.25, "fuzzy": 0.25, "semantic": 0.75}
 
@@ -86,7 +91,31 @@ def bge_embedding(text: str, model_id: str) -> np.ndarray:
     inputs = tokenizer([text], padding=True, truncation=True, max_length=512, return_tensors="pt").to(device)
     with torch.inference_mode():
         vector = model(**inputs).last_hidden_state[:, 0].float().cpu().numpy()[0]
-    return vector / max(float(np.linalg.norm(vector)), 1e-12)
+    output = vector / max(float(np.linalg.norm(vector)), 1e-12)
+    del model
+    if device.type == "cuda":
+        torch.cuda.empty_cache()
+    return output
+
+
+def rerank(query: str, passages: list[str], model_path: str, batch_size: int = 4) -> np.ndarray:
+    from transformers import AutoModelForSequenceClassification, AutoTokenizer
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    dtype = torch.float16 if device.type == "cuda" else torch.float32
+    tokenizer = AutoTokenizer.from_pretrained(model_path, local_files_only=True)
+    model = AutoModelForSequenceClassification.from_pretrained(
+        model_path, dtype=dtype, local_files_only=True).to(device).eval()
+    scores = []
+    for start in range(0, len(passages), batch_size):
+        pairs = [[query, passage] for passage in passages[start:start + batch_size]]
+        inputs = tokenizer(pairs, padding=True, truncation=True, max_length=512, return_tensors="pt").to(device)
+        with torch.inference_mode():
+            logits = model(**inputs).logits.float().reshape(-1)
+        scores.extend(torch.sigmoid(logits).cpu().tolist())
+    del model
+    if device.type == "cuda":
+        torch.cuda.empty_cache()
+    return np.asarray(scores, dtype=np.float32)
 
 
 def main() -> None:
@@ -103,19 +132,24 @@ def main() -> None:
     parser.add_argument("--fuzzy-weight", type=float)
     parser.add_argument("--bge-model-id", default=str(ROOT / "models" / "bge-m3"))
     parser.add_argument("--no-intent-weights", action="store_true")
+    parser.add_argument("--reranker", default=str(ROOT / "models" / "bge-reranker-v2-m3"))
+    parser.add_argument("--rerank-k", type=int, default=30)
+    parser.add_argument("--rerank-batch-size", type=int, default=4)
+    parser.add_argument("--no-reranker", action="store_true")
     args = parser.parse_args()
 
     table = pd.read_parquet(args.index / "scenes.parquet")
     embeddings = np.load(args.index / "frame_embeddings.npy", mmap_mode="r")
     frames = pd.read_parquet(args.index / "frames.parquet")
-    query = text_embedding(args.query, args.model_id)
-    frame_scores = np.asarray(embeddings @ query, dtype=np.float32)
+    plan = build_query_plan(args.query)
+    query_vectors = text_embeddings(list(plan.variants), args.model_id)
+    frame_scores = np.asarray((embeddings @ query_vectors.T).max(axis=1), dtype=np.float32)
     visual_scores = np.full(len(table), -np.inf, dtype=np.float32)
     np.maximum.at(visual_scores, frames.scene_row.to_numpy(dtype=np.int64), frame_scores)
     visual_order = np.argsort(-visual_scores)[: min(args.candidate_k, len(table))]
     text_order = fts_candidates(args.index / "search.sqlite3", args.query, args.candidate_k)
     fuzzy_order = fuzzy_candidates(args.index / "search.sqlite3", args.query, args.candidate_k)
-    intent = query_intent(args.query)
+    intent = query_intent(plan.intent)
     visual_weight = args.visual_weight if args.no_intent_weights else float(intent["visual"])
     text_weight = args.text_weight if args.no_intent_weights else float(intent["lexical"])
     fuzzy_weight = (args.fuzzy_weight if args.fuzzy_weight is not None else
@@ -134,6 +168,22 @@ def main() -> None:
         bge_scores = np.asarray(np.load(bge_path, mmap_mode="r") @ bge_embedding(args.query, args.bge_model_id), dtype=np.float32)
         for rank, row in enumerate(np.argsort(-bge_scores)[:args.candidate_k], 1):
             fused[int(row)] = fused.get(int(row), 0.0) + float(intent["semantic"]) / (60 + rank)
+    rapid_scores = {row: fuzz.WRatio(plan.normalized, str(table.iloc[row].retrieval_text))
+                    for row in fused}
+    for rank, row in enumerate(sorted(rapid_scores, key=rapid_scores.get, reverse=True), 1):
+        fused[row] += fuzzy_weight / (60 + rank)
+    preliminary = sorted(fused, key=fused.get, reverse=True)[:args.rerank_k]
+    has_visual_text = any(bool(str(table.iloc[row].visual_summary).strip()) for row in preliminary)
+    reranker_used = (not args.no_reranker and Path(args.reranker).exists()
+                     and (plan.intent != "visual" or has_visual_text))
+    reranker_scores: dict[int, float] = {}
+    if reranker_used and preliminary:
+        values = rerank(plan.normalized, [str(table.iloc[row].retrieval_text) for row in preliminary],
+                        args.reranker, args.rerank_batch_size)
+        reranker_scores = {row: float(score) for row, score in zip(preliminary, values)}
+        reranker_weight = 2.0 if plan.intent in {"asr", "ocr"} else 1.0
+        for rank, row in enumerate(sorted(reranker_scores, key=reranker_scores.get, reverse=True), 1):
+            fused[row] += reranker_weight / (60 + rank)
     order = sorted(fused, key=fused.get, reverse=True)[: args.top_k]
     results = []
     for rank, row_id in enumerate(order, 1):
@@ -142,8 +192,11 @@ def main() -> None:
                         "video_id": row.video_id, "scene_index": int(row.scene_index),
                         "start_time": float(row.start_time), "end_time": float(row.end_time),
                         "representative_frame_ids": [int(value) for value in row.representative_frame_ids],
+                        "rapidfuzz_score": float(rapid_scores.get(row_id, 0.0)),
+                        "reranker_score": reranker_scores.get(row_id),
                         "asr_text": "" if pd.isna(row.asr_text) else str(row.asr_text)})
-    print(json.dumps({"query": args.query, "intent": intent["intent"], "bge_m3_used": bge_used,
+    print(json.dumps({"query": args.query, "query_plan": plan.to_dict(), "intent": intent["intent"],
+                      "bge_m3_used": bge_used, "reranker_used": reranker_used,
                       "weights": {"visual": visual_weight, "lexical": text_weight, "fuzzy": fuzzy_weight},
                       "results": results}, ensure_ascii=False, indent=2))
 
