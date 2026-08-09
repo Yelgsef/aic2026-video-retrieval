@@ -82,6 +82,21 @@ each worker.
 - Base compact index: `workspace/retrieval/google_siglip2_base_patch16_224/<video_id>_unified/`
 - SO400M final index: `workspace/retrieval/google_siglip2_so400m_patch14_384/<video_id>_final_from_google_siglip2_base_patch16_224/`
 - ASR: `workspace/asr/faster_whisper_large_v3/<video_id>.json`
+- Semantic scenes: `workspace/semantic_scenes/<video_id>/`
+- Gemini Batch requests/contact sheets: `workspace/gemini_batches/<video_id>/`
+
+Gemini enrichment is deliberately asynchronous. The scheduler prepares the
+contact sheets and JSONL without using API quota. Submit, inspect, and download
+a prepared video separately:
+
+```powershell
+uv run --project environments/gemini python scripts/gemini_batch_scenes.py submit --video-id L21_V001
+uv run --project environments/gemini python scripts/gemini_batch_scenes.py status --video-id L21_V001
+uv run --project environments/gemini python scripts/gemini_batch_scenes.py download --video-id L21_V001
+```
+
+Submission state is stored in `workspace/gemini_batches/jobs.sqlite3`; repeated
+`submit` calls do not create a second job after a job name has been recorded.
 
 Workspace artifacts are intentionally excluded from Git. Back up the scheduler
 database, manifests, completed embeddings, ASR JSON, and future vector database

@@ -17,13 +17,15 @@ import pandas as pd
 ROOT = Path(__file__).resolve().parents[1]
 DB_PATH = ROOT / "workspace" / "scheduler" / "jobs.sqlite3"
 STOP_REQUESTED = False
-STAGES = ("omnishot", "sampling", "siglip-base", "siglip-so400m-final", "asr-large-v3")
+STAGES = ("omnishot", "sampling", "siglip-base", "siglip-so400m-final", "asr-large-v3", "semantic-scenes", "gemini-batch-prepare")
 DEPENDENCY = {
     "omnishot": None,
     "sampling": "omnishot",
     "siglip-base": "sampling",
     "siglip-so400m-final": "siglip-base",
     "asr-large-v3": None,
+    "semantic-scenes": ("siglip-so400m-final", "asr-large-v3"),
+    "gemini-batch-prepare": "semantic-scenes",
 }
 
 
@@ -37,6 +39,8 @@ def configuration_hash() -> str:
         "asr_model": "large-v3",
         "asr_compute_type": "float16",
         "asr_beam_size": 1,
+        "semantic_scene_version": "0.2.0",
+        "gemini_batch_schema_version": "0.1.0",
     }
     return hashlib.sha256(json.dumps(payload, sort_keys=True).encode()).hexdigest()[:16]
 
@@ -118,6 +122,13 @@ def artifact_valid(video_id: str, stage: str) -> bool:
         if stage == "asr-large-v3":
             value = json.loads((ROOT / "workspace" / "asr" / "faster_whisper_large_v3" / f"{video_id}.json").read_text(encoding="utf-8"))
             return value.get("duration", 0) > 0 and "segments" in value
+        if stage == "semantic-scenes":
+            table = pd.read_parquet(ROOT / "workspace" / "semantic_scenes" / video_id / "scenes.parquet")
+            return len(table) > 0 and table.scene_id.is_unique and bool((table.end_time > table.start_time).all())
+        if stage == "gemini-batch-prepare":
+            path = ROOT / "workspace" / "gemini_batches" / video_id / "requests.jsonl"
+            lines = path.read_text(encoding="utf-8").splitlines()
+            return len(lines) > 0 and all(json.loads(line).get("key") for line in lines)
     except (OSError, ValueError, KeyError, json.JSONDecodeError):
         return False
     return False
@@ -162,11 +173,12 @@ def claim(connection: sqlite3.Connection, shard: int, worker_id: str, stages: tu
             if dependency is None:
                 selected = row
                 break
-            dependency_status = connection.execute(
-                "SELECT status FROM jobs WHERE video_id=? AND stage=? AND config_hash=?",
-                (row["video_id"], dependency, config),
-            ).fetchone()
-            if dependency_status and dependency_status["status"] == "completed":
+            dependencies = dependency if isinstance(dependency, tuple) else (dependency,)
+            dependency_rows = connection.execute(
+                f"SELECT stage,status FROM jobs WHERE video_id=? AND stage IN ({','.join('?' for _ in dependencies)}) AND config_hash=?",
+                (row["video_id"], *dependencies, config),
+            ).fetchall()
+            if len(dependency_rows) == len(dependencies) and all(item["status"] == "completed" for item in dependency_rows):
                 selected = row
                 break
         if selected is None:
@@ -194,6 +206,8 @@ def command_for(video_id: str, stage: str) -> list[str]:
         "siglip-base": ["uv", "run", "--project", "environments/siglip2", "python", "scripts/build_siglip2_sample_index.py", "--video-id", video_id, "--model-id", "google/siglip2-base-patch16-224", "--batch-size", "16", "--unified-select", "--force"],
         "siglip-so400m-final": ["uv", "run", "--project", "environments/siglip2", "python", "scripts/build_siglip2_final_index.py", "--video-id", video_id, "--source-encoder-id", "google_siglip2_base_patch16_224", "--model-id", "google/siglip2-so400m-patch14-384", "--batch-size", "8", "--force"],
         "asr-large-v3": ["uv", "run", "--project", "environments/asr", "python", "scripts/transcribe_faster_whisper.py", "--video-id", video_id, "--model", "large-v3", "--device", "cuda", "--compute-type", "float16", "--beam-size", "1", "--force"],
+        "semantic-scenes": ["uv", "run", "--project", "environments/siglip2", "python", "scripts/build_semantic_scenes.py", "--video-id", video_id, "--force"],
+        "gemini-batch-prepare": ["uv", "run", "--project", "environments/siglip2", "python", "scripts/gemini_batch_scenes.py", "prepare", "--video-id", video_id],
     }
     return commands[stage]
 
