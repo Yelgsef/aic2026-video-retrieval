@@ -1,0 +1,43 @@
+{
+  "python.analysis.diagnosticMode": "openFilesOnly",
+  "python.analysis.indexing": false,
+  "python.analysis.include": [
+    "aic_pipeline",
+    "scripts",
+    "tests"
+  ],
+  "python.analysis.exclude": [
+    "**/.git/**",
+    "**/.venv/**",
+    "**/__pycache__/**",
+    "archive/**",
+    "environments/**",
+    "models/**",
+    "third_party/**",
+    "workspace/**",
+    ".pdf_tools/**"
+  ],
+  "files.watcherExclude": {
+    "**/.git/objects/**": true,
+    "**/.git/subtree-cache/**": true,
+    "**/.venv/**": true,
+    "**/__pycache__/**": true,
+    "**/archive/**": true,
+    "**/environments/**": true,
+    "**/models/**": true,
+    "**/third_party/**": true,
+    "**/workspace/**": true,
+    "**/.pdf_tools/**": true
+  },
+  "search.exclude": {
+    "**/.venv": true,
+    "**/archive": true,
+    "**/environments": true,
+    "**/models": true,
+    "**/third_party": true,
+    "**/workspace": true,
+    "**/.pdf_tools": true
+  },
+  "files.maxMemoryForLargeFilesMB": 4096,
+  "git.ignoreLimitWarning": true
+}
