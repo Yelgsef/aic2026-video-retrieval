@@ -89,6 +89,29 @@ chọn frame chính xác:
 | All-events sequence accuracy | 0,10 | 0,60 |
 | Mean latency | 4,396 giây | 4,915 giây |
 
+### Retrieval ensemble và TRAKE short-clip
+
+OpenCLIP ViT-L/14 LAION-2B được index độc lập trên cùng 3.744 final frame rồi
+fuse bằng weighted RRF; không trộn trực tiếp vector với SigLIP2. Trên 38 KIS
+pseudo-query, ensemble tăng MRR từ `0,6562` lên `0,6647` và Recall@5 từ
+`0,8158` lên `0,8421`; Recall@1 giữ nguyên `0,5526`. Latency KIS tăng khoảng
+`0,46` giây/query sau khi model đã load.
+
+TRAKE dùng field-specific BGE vectors (summary, ASR, OCR/entities), windowed
+coarse-to-fine decoding và temporal pooling trong cửa sổ 2 giây:
+
+| TRAKE metric | Coarse-to-fine | Field + short-clip |
+|---|---:|---:|
+| Video selection accuracy | 1,00 | 1,00 |
+| Strictly increasing sequence | 1,00 | 1,00 |
+| Per-event temporal hit rate | 0,8667 | 0,90 |
+| All-events sequence accuracy | 0,60 | 0,70 |
+| Mean latency | 4,915 giây | 4,832 giây |
+
+Normalized fusion và field-aware KIS cũng đã được ablation nhưng không được
+chọn: KIS MRR lần lượt là `0,6541` và thấp hơn baseline. Đây là cấu hình theo
+task, không phải một bộ trọng số dùng chung cho mọi loại câu hỏi.
+
 QA được thêm grounding-query normalization và hai temporal views cho mỗi scene:
 
 | QA metric | Trước | Sau |

@@ -14,10 +14,12 @@ from aic_pipeline.offline_search_engine import OfflineSearchEngine
 from aic_pipeline.temporal_alignment import TemporalAligner
 
 
-def choose_video(engine: OfflineSearchEngine, events: list[str]) -> tuple[str, dict, list[list[dict]]]:
+def choose_video(engine: OfflineSearchEngine, events: list[str],
+                 fusion_mode: str = "rrf", field_aware: bool = False) -> tuple[str, dict, list[list[dict]]]:
     per_event, event_results, videos = [], [], set()
     for event in events:
-        result = engine.search(event, top_k=100, rerank_k=30)
+        result = engine.search(event, top_k=100, rerank_k=30, fusion_mode=fusion_mode,
+                               field_aware=field_aware)
         event_results.append(result["results"])
         scores = {}
         for row in result["results"]:
@@ -41,6 +43,11 @@ def main() -> None:
     parser.add_argument("--labels", type=Path, default=ROOT / "workspace/validation/trake_pseudolabels_subset10.jsonl")
     parser.add_argument("--index", type=Path, default=ROOT / "workspace/offline_index_subset10")
     parser.add_argument("--output", type=Path, default=ROOT / "workspace/validation/trake_end_to_end_subset10.json")
+    parser.add_argument("--decoder", choices=("dense", "windowed"), default="windowed")
+    parser.add_argument("--fusion-mode", choices=("rrf", "normalized"), default="rrf")
+    parser.add_argument("--field-aware", action="store_true")
+    parser.add_argument("--short-clip", action="store_true")
+    parser.add_argument("--clip-seconds", type=float, default=2.0)
     args = parser.parse_args()
     labels = [json.loads(x) for x in args.labels.read_text(encoding="utf-8").splitlines() if x.strip()]
     engine = OfflineSearchEngine(ROOT, args.index)
@@ -49,8 +56,9 @@ def main() -> None:
     for label in labels:
         started = time.perf_counter()
         events = [x["description_vi"] for x in label["events"]]
-        selected_video, candidates, windows = choose_video(engine, events)
-        alignment = aligner.align(selected_video, events, windows)
+        selected_video, candidates, windows = choose_video(engine, events, args.fusion_mode, args.field_aware)
+        alignment = aligner.align(selected_video, events, windows, decoder=args.decoder,
+                                  short_clip=args.short_clip, clip_seconds=args.clip_seconds)
         predicted = alignment["events"]
         hits = [selected_video == label["video_id"] and truth["start_frame"] <= pred["frame_id"] < truth["end_frame_exclusive"]
                 for truth, pred in zip(label["events"], predicted)]
@@ -63,7 +71,9 @@ def main() -> None:
         rows.append(row)
         print(json.dumps(row, ensure_ascii=False), flush=True)
     event_count = sum(len(r["event_hits"]) for r in rows)
-    report = {"pseudo_labels": True, "count": len(rows),
+    report = {"pseudo_labels": True, "decoder": args.decoder, "fusion_mode": args.fusion_mode,
+              "field_aware": args.field_aware, "count": len(rows),
+              "short_clip": args.short_clip, "clip_seconds": args.clip_seconds if args.short_clip else None,
               "video_accuracy": sum(r["video_hit"] for r in rows) / len(rows),
               "event_hit_rate": sum(sum(r["event_hits"]) for r in rows) / event_count,
               "sequence_accuracy": sum(r["all_events_hit"] for r in rows) / len(rows),

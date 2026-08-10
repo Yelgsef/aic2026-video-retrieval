@@ -23,6 +23,9 @@ def main() -> None:
     parser.add_argument("--output", type=Path, default=ROOT / "workspace" / "validation" / "pseudolabel_retrieval_eval.json")
     parser.add_argument("--index", type=Path, default=ROOT / "workspace" / "offline_index")
     parser.add_argument("--limit", type=int, default=0)
+    parser.add_argument("--fusion-mode", choices=("rrf", "normalized"), default="rrf")
+    parser.add_argument("--field-aware", action="store_true")
+    parser.add_argument("--openclip", action="store_true")
     args = parser.parse_args()
     labels = pd.read_csv(args.labels)
     if args.limit:
@@ -31,14 +34,18 @@ def main() -> None:
     rows = []
     for label in labels.itertuples(index=False):
         started = time.perf_counter()
-        response = engine.search(str(label.query_text_vi), top_k=100, rerank_k=30)
+        response = engine.search(str(label.query_text_vi), top_k=100, rerank_k=30,
+                                 fusion_mode=args.fusion_mode, field_aware=args.field_aware,
+                                 openclip=args.openclip)
         expected = int(str(label.scene_id).rsplit(":", 1)[-1])
         returned = [int(item["scene_index"]) for item in response["results"]]
         rank = returned.index(expected) + 1 if expected in returned else None
         rows.append({"query_id": label.query_id, "query_type": label.query_type, "expected_scene": expected,
                      "rank": rank, "latency_seconds": time.perf_counter() - started})
         print(json.dumps(rows[-1], ensure_ascii=False), flush=True)
-    report = {"pseudo_labels": True, "count": len(rows), "mean_latency_seconds": sum(r["latency_seconds"] for r in rows) / len(rows),
+    report = {"pseudo_labels": True, "fusion_mode": args.fusion_mode, "field_aware": args.field_aware,
+              "openclip": args.openclip,
+              "count": len(rows), "mean_latency_seconds": sum(r["latency_seconds"] for r in rows) / len(rows),
               "mean_reciprocal_rank": sum(1 / r["rank"] if r["rank"] else 0 for r in rows) / len(rows),
               "recall_at_1": sum(r["rank"] == 1 for r in rows) / len(rows),
               "recall_at_5": sum(r["rank"] is not None and r["rank"] <= 5 for r in rows) / len(rows),

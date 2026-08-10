@@ -141,7 +141,9 @@ def prepare(args: argparse.Namespace) -> None:
                 {"text": prompt(scene)},
                 {"inlineData": {"mimeType": "image/jpeg", "data": encoded}},
             ]}],
-            "generationConfig": {"temperature": 0.1, "responseMimeType": "application/json",
+            "generationConfig": {"temperature": 0.1,
+                                   "thinkingConfig": {"thinkingLevel": "MINIMAL"},
+                                   "responseMimeType": "application/json",
                                    "responseJsonSchema": SCHEMA},
         }
         lines.append(json.dumps({"key": scene_id, "request": request}, ensure_ascii=False))

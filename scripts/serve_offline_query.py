@@ -88,7 +88,8 @@ def main() -> None:
                         raise ValueError("/trake requires a query with at least two ordered events")
                     # Score every ordered event independently. A video must cover the
                     # whole sequence; one excellent match must not dominate missing events.
-                    event_retrievals = [engine.search(event, top_k=100, rerank_k=30)
+                    event_retrievals = [engine.search(event, top_k=100, rerank_k=30,
+                                                      field_aware=True)
                                         for event in task.events]
                     per_event = []
                     all_videos = set()
@@ -116,7 +117,9 @@ def main() -> None:
                                      for retrieval in event_retrievals]
                     if temporal_aligner[0] is None:
                         temporal_aligner[0] = TemporalAligner(ROOT)
-                    alignment = temporal_aligner[0].align(video_id, list(task.events), event_windows)
+                    alignment = temporal_aligner[0].align(
+                        video_id, list(task.events), event_windows,
+                        decoder="windowed", short_clip=True, clip_seconds=2.0)
                     self.send_json(200, {"task_plan": task.to_dict(), "alignment": alignment,
                                          "video_candidates": video_scores})
                 except (ValueError, KeyError, TypeError, json.JSONDecodeError) as exc:
@@ -133,9 +136,15 @@ def main() -> None:
                     raise ValueError("invalid request size")
                 request = json.loads(self.rfile.read(length))
                 started_query = time.perf_counter()
-                response = engine.search(str(request["query"]), top_k=int(request.get("top_k", 100)),
+                query = str(request["query"])
+                task = route_query(query)
+                # Validation shows the independent OpenCLIP branch helps KIS,
+                # while field-specific BGE vectors help ordered TRAKE events.
+                response = engine.search(query, top_k=int(request.get("top_k", 100)),
                                          candidate_k=int(request.get("candidate_k", 300)),
-                                         rerank_k=int(request.get("rerank_k", 30)))
+                                         rerank_k=int(request.get("rerank_k", 30)),
+                                         openclip=bool(request.get("openclip", task.task == "KIS")),
+                                         field_aware=bool(request.get("field_aware", False)))
                 response["latency_seconds"] = time.perf_counter() - started_query
                 self.send_json(200, response)
             except (ValueError, KeyError, TypeError, json.JSONDecodeError) as exc:

@@ -57,7 +57,9 @@ Shot + Final Keyframes + ASR
      Vector-Fuzzy Fusion có intent-aware weights
       |
       v
-[14] Model-Based Multimodal Reranking                CHƯA BUILD
+[14] Model-Based Multimodal Reranking                BASELINE ĐÃ BUILD
+     BGE Reranker; OpenCLIP ensemble cho KIS;
+     coarse-to-fine + short-clip cho TRAKE
       |
       v
 [15] Query API + User Interface                      CHƯA BUILD
@@ -126,6 +128,7 @@ chỉ có ASR và tự bổ sung Gemini fields sau khi Batch responses xuất hi
 Mỗi semantic scene
   |
   +-- SigLIP2 SO400M image vectors
+  +-- OpenCLIP ViT-L/14 image vectors (nhánh độc lập, dùng cho KIS)
   +-- Whisper ASR text + timestamps
   +-- Gemini caption
   +-- Gemini OCR
@@ -169,6 +172,7 @@ Stage A - Query Understanding
   v
 Stage B - Parallel Candidate Generation
   +-- SigLIP2 query-to-image vector search
+  +-- OpenCLIP ViT-L/14 query-to-image search cho KIS
   +-- BGE-M3 query-to-scene-text vector search
   +-- SQLite FTS5/BM25 cho ASR, OCR và caption
   +-- RapidFuzz + character n-gram cho OCR/tên riêng bị sai
@@ -186,6 +190,8 @@ Stage C - Vector-Fuzzy Fusion
 Stage D - Model-Based Reranking
   - BGE Reranker v2 M3 cho query-scene text
   - kết hợp visual, semantic, lexical và fuzzy evidence
+  - BGE Reranker v2 M3 cho text evidence
+  - TRAKE: field-aware scene retrieval -> short-clip pooling -> temporal DP
   - optional VLM rerank top-N khi có GPU mạnh
   |
   v
@@ -227,6 +233,19 @@ expansion và BGE Reranker v2 M3. Nó chưa có learned intent model hoặc mộ
 dịch/query-expansion tổng quát. Vì vậy đây vẫn chưa phải chất lượng retrieval
 cuối cùng.
 
+Cấu hình production được chọn theo task thay vì bật mọi nhánh cùng lúc:
+
+- KIS: RRF baseline + OpenCLIP ViT-L/14 ensemble. Trên 38 pseudo-query, MRR
+  tăng `0,6562 -> 0,6647`, Recall@5 tăng `0,8158 -> 0,8421`.
+- TRAKE: field-aware BGE scene retrieval + windowed coarse-to-fine decoder +
+  short-clip pooling 2 giây. Trên 10 pseudo-query, event hit `0,90` và
+  full-sequence accuracy `0,70`.
+- QA: không tự động bật OpenCLIP/field-aware; tiếp tục dùng high-resolution và
+  object-aware fallback đã validation.
+- Normalized-score fusion và field-aware cho KIS đã được thử nhưng giảm MRR,
+  vì vậy không bật mặc định. Các ablation được giữ dưới dạng option để đánh giá
+  lại trên strong labels, tránh overfit vào subset nhỏ.
+
 ## 8. Model inventory
 
 | Stage | Model/công cụ | Trạng thái |
@@ -234,6 +253,7 @@ cuối cùng.
 | Shot detection | OmniShotCut | Đã build |
 | Sampled-frame embedding | SigLIP2 Base 224 | Đã build |
 | Final image embedding | SigLIP2 SO400M 384 | Đã build |
+| Independent visual ensemble | OpenCLIP ViT-L/14 LAION-2B | Đã build, tự bật cho KIS |
 | ASR | Whisper large-v3 | Đã build |
 | OCR/caption/entities | Gemini Batch | Generator đã build, chưa chạy toàn dataset |
 | Text semantic embedding | BGE-M3 | Đã build và smoke test trên L21_V001 |
@@ -242,7 +262,7 @@ cuối cùng.
 | Query intent/expansion | Transformer + rule fallback | Rule fallback + concept expansion đã build |
 | Text reranking | BGE Reranker v2 M3 | Đã build và smoke test |
 | Q&A visual answering | Hybrid top-24 + Gemini contact sheet | Đã build; cần validation đa video |
-| TRAKE temporal alignment | SigLIP2 Base stride-5 + dynamic programming | Đã build baseline |
+| TRAKE temporal alignment | Field-aware coarse retrieval + stride-5 short-clip + DP | Đã build, validation subset 10 |
 | Optional local visual-language reranking | VLM top-N | Chưa build |
 
 ## 8.1. Persistent query service
