@@ -30,7 +30,7 @@ def qa_grounding_query(question: str) -> str:
         (r"\bloài động vật nào\b", "động vật"), (r"\bcon vật nào\b", "động vật"),
         (r"\bhiện tượng gì\b", "hiện tượng"), (r"\bhành động gì\b", "hành động"),
         (r"\btheo hướng nào\b", ""), (r"\blà gì\b", ""),
-        (r"\bghi chữ và số gì\b", "biển số xe"),
+        (r"\bghi chữ và số gì\b", ""),
     )
     for pattern, replacement in replacements:
         text = re.sub(pattern, replacement, text, flags=re.IGNORECASE)
