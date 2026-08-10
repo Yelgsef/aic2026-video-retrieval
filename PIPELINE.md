@@ -364,10 +364,27 @@ Multi-range QA verifier đã tạo 32 accepted scene ranges cho 12 query và aud
 0,50 lên 0,8333 và joint accuracy tăng từ 0,50 lên 0,75. Các range này vẫn là
 pseudo-label và giữ `verified=false`.
 
+### Object-aware retrieval và QA
+
+YOLO-World `yolov8s-worldv2` chạy offline trên final keyframes với vocabulary
+được giới hạn theo AIC. Mỗi detection lưu label, confidence, bounding box chuẩn
+hóa, video/frame/time/shot/scene; scene documents chỉ nhận detection từ ngưỡng
+0,20 để giảm nhiễu. Smoke test `L24_V045`: 35/35 frame decode thành công, 127
+raw detections trên 32 frame trong 6,558 giây warm; 5/6 scene có object metadata.
+
+QA dùng Grounding DINO Tiny theo điều kiện: chỉ load khi query chứa vật thể cụ
+thể, lấy tối đa bốn crop từ các high-resolution evidence frames, và luôn giữ
+full-frame views làm fallback. Query về hướng/vị trí không dùng crop vì mất ngữ
+cảnh không gian. Benchmark 12 multi-range pseudo-query sau gating: frame hit =
+0,8333; answer match = 0,75; joint accuracy = 0,75; mean latency = 17,093 giây.
+Grounding nhận đúng biển số `83-P3 881.43`; câu bãi biển không còn kích hoạt
+nhầm. Grounding DINO chạy FP32 và dùng khoảng 668 MB VRAM riêng.
+
 ## 10. Trạng thái chạy trên dataset
 
 - Code visual pipeline đã build tới final SO400M embeddings.
 - Code Whisper ASR và semantic-scene merging đã build.
+- Code YOLO-World offline object metadata và query-conditioned Grounding DINO đã build.
 - Code Gemini contact-sheet/Batch JSONL đã build nhưng chưa submit toàn dataset.
 - Offline hybrid pipeline đã chạy trên subset 10 video; index hoàn chỉnh nằm
   tại `workspace/offline_index_subset10`.
@@ -395,7 +412,7 @@ pseudo-label và giữ `verified=false`.
 3. Xây transformer query intent và model-based query expansion Việt-Anh.
 4. Chạy Recall@K, MRR, temporal hit rate và latency benchmark đầy đủ.
 5. Chuyển SigLIP2/Whisper sang persistent GPU workers.
-6. Tích hợp toàn bộ stage vào resumable production scheduler.
+6. Chuyển object/SigLIP2/Whisper sang persistent GPU workers trên Vast.ai.
 7. Chạy validation subset trước, sau đó mới chạy toàn dataset.
 8. Xây Query API và giao diện tìm kiếm.
 

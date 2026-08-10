@@ -17,7 +17,8 @@ import pandas as pd
 ROOT = Path(__file__).resolve().parents[1]
 DB_PATH = ROOT / "workspace" / "scheduler" / "jobs.sqlite3"
 STOP_REQUESTED = False
-STAGES = ("omnishot", "sampling", "siglip-base", "siglip-so400m-final", "asr-large-v3", "semantic-scenes", "gemini-batch-prepare")
+STAGES = ("omnishot", "sampling", "siglip-base", "siglip-so400m-final", "asr-large-v3",
+          "semantic-scenes", "objects-yoloworld", "gemini-batch-prepare")
 DEPENDENCY = {
     "omnishot": None,
     "sampling": "omnishot",
@@ -25,13 +26,14 @@ DEPENDENCY = {
     "siglip-so400m-final": "siglip-base",
     "asr-large-v3": None,
     "semantic-scenes": ("siglip-so400m-final", "asr-large-v3"),
+    "objects-yoloworld": "semantic-scenes",
     "gemini-batch-prepare": "semantic-scenes",
 }
 
 
 def configuration_hash() -> str:
     payload = {
-        "pipeline_version": "0.2.0",
+        "pipeline_version": "0.3.0",
         "sampling_stride": 5,
         "visual_model": "google/siglip2-base-patch16-224",
         "visual_batch_size": 16,
@@ -41,6 +43,8 @@ def configuration_hash() -> str:
         "asr_beam_size": 1,
         "semantic_scene_version": "0.2.0",
         "gemini_batch_schema_version": "0.1.0",
+        "object_model": "yolov8s-worldv2",
+        "object_confidence": 0.12,
     }
     return hashlib.sha256(json.dumps(payload, sort_keys=True).encode()).hexdigest()[:16]
 
@@ -129,6 +133,10 @@ def artifact_valid(video_id: str, stage: str) -> bool:
             path = ROOT / "workspace" / "gemini_batches" / video_id / "requests.jsonl"
             lines = path.read_text(encoding="utf-8").splitlines()
             return len(lines) > 0 and all(json.loads(line).get("key") for line in lines)
+        if stage == "objects-yoloworld":
+            table = pd.read_parquet(ROOT / "workspace" / "objects_yoloworld" / video_id / "detections.parquet")
+            report = json.loads((ROOT / "workspace" / "objects_yoloworld" / video_id / "report.json").read_text(encoding="utf-8"))
+            return report.get("decoded_frames", 0) == report.get("final_frames", -1) and "frame_id" in table.columns
     except (OSError, ValueError, KeyError, json.JSONDecodeError):
         return False
     return False
@@ -174,7 +182,7 @@ def claim(connection: sqlite3.Connection, shard: int, worker_id: str, stages: tu
             video_filter = f" AND video_id IN ({','.join('?' for _ in video_ids)})"
             parameters = [config, *stages, *video_ids]
         rows = connection.execute(
-            f"SELECT * FROM jobs WHERE config_hash=?{shard_filter} AND status IN ('pending','retry') AND stage IN ({placeholders}){video_filter} ORDER BY video_id, CASE stage WHEN 'omnishot' THEN 1 WHEN 'sampling' THEN 2 WHEN 'siglip-base' THEN 3 WHEN 'siglip-so400m-final' THEN 4 WHEN 'asr-large-v3' THEN 5 WHEN 'semantic-scenes' THEN 6 ELSE 7 END",
+            f"SELECT * FROM jobs WHERE config_hash=?{shard_filter} AND status IN ('pending','retry') AND stage IN ({placeholders}){video_filter} ORDER BY video_id, CASE stage WHEN 'omnishot' THEN 1 WHEN 'sampling' THEN 2 WHEN 'siglip-base' THEN 3 WHEN 'siglip-so400m-final' THEN 4 WHEN 'asr-large-v3' THEN 5 WHEN 'semantic-scenes' THEN 6 WHEN 'objects-yoloworld' THEN 7 WHEN 'gemini-batch-prepare' THEN 8 ELSE 9 END",
             parameters,
         ).fetchall()
         selected = None
@@ -217,6 +225,7 @@ def command_for(video_id: str, stage: str) -> list[str]:
         "siglip-so400m-final": ["uv", "run", "--project", "environments/siglip2", "python", "scripts/build_siglip2_final_index.py", "--video-id", video_id, "--source-encoder-id", "google_siglip2_base_patch16_224", "--model-id", "google/siglip2-so400m-patch14-384", "--batch-size", "8", "--force"],
         "asr-large-v3": ["uv", "run", "--project", "environments/asr", "python", "scripts/transcribe_faster_whisper.py", "--video-id", video_id, "--model", "large-v3", "--device", "cuda", "--compute-type", "float16", "--beam-size", "1", "--force"],
         "semantic-scenes": ["uv", "run", "--project", "environments/siglip2", "python", "scripts/build_semantic_scenes.py", "--video-id", video_id, "--force"],
+        "objects-yoloworld": ["uv", "run", "--project", "environments/objects", "python", "scripts/extract_yoloworld_objects.py", "--video-id", video_id, "--batch-size", "8", "--force"],
         "gemini-batch-prepare": ["uv", "run", "--project", "environments/siglip2", "python", "scripts/gemini_batch_scenes.py", "prepare", "--video-id", video_id],
     }
     return commands[stage]

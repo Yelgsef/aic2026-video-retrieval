@@ -29,14 +29,14 @@ def load_gemini(path: Path) -> dict[str, dict[str, Any]]:
     return {str(row["scene_id"]): row for row in records}
 
 
-def retrieval_text(scene: Any, description: dict[str, Any]) -> str:
+def retrieval_text(scene: Any, description: dict[str, Any], detected_objects: list[str] | None = None) -> str:
     ocr = unique([item.get("text", "") for item in description.get("ocr_lines", [])])
     sections = [
         ("Nội dung hình ảnh", [description.get("summary_vi", "")]),
         ("Chữ trong hình", ocr),
         ("Lời nói", [scene.asr_exact, scene.asr_context]),
         ("Người", description.get("people", [])),
-        ("Vật thể", description.get("objects", [])),
+        ("Vật thể", list(description.get("objects", [])) + list(detected_objects or [])),
         ("Hành động", description.get("actions", [])),
         ("Địa điểm", description.get("locations", [])),
         ("Sự kiện", description.get("events", [])),
@@ -54,11 +54,21 @@ def main() -> None:
     scenes = pd.read_parquet(ROOT / "workspace" / "semantic_scenes" / args.video_id / "scenes.parquet")
     gemini_path = args.gemini or ROOT / "workspace" / "gemini_parsed" / args.video_id / "scenes.jsonl"
     gemini = load_gemini(gemini_path)
+    detections_path = ROOT / "workspace" / "objects_yoloworld" / args.video_id / "detections.parquet"
+    detected_by_scene: dict[int, list[str]] = {}
+    if detections_path.exists():
+        detections = pd.read_parquet(detections_path)
+        detections = detections.loc[detections.confidence.ge(0.20)]
+        for scene_index, group in detections.groupby("scene_index"):
+            labels = (group.sort_values("confidence", ascending=False)
+                      .drop_duplicates("label").head(30).label.astype(str).tolist())
+            detected_by_scene[int(scene_index)] = labels
     output = args.output_dir or ROOT / "workspace" / "scene_documents" / args.video_id
     documents = []
     for scene in scenes.sort_values("scene_index").itertuples(index=False):
         record = gemini.get(str(scene.scene_id), {})
         description = record.get("description", {})
+        detected_objects = detected_by_scene.get(int(scene.scene_index), [])
         ocr_lines = description.get("ocr_lines", [])
         document = {
             "schema_version": "0.2.0", "document_id": str(scene.scene_id), "video_id": args.video_id,
@@ -69,15 +79,19 @@ def main() -> None:
             "asr_text": str(scene.asr_exact or ""), "asr_context": str(scene.asr_context or ""),
             "visual_summary": str(description.get("summary_vi", "")), "ocr_lines": ocr_lines,
             "ocr_text": unique([item.get("text", "") for item in ocr_lines]),
-            "people": unique(description.get("people", [])), "objects": unique(description.get("objects", [])),
+            "people": unique(description.get("people", [])),
+            "objects": unique(list(description.get("objects", [])) + detected_objects),
+            "detected_objects": detected_objects,
             "actions": unique(description.get("actions", [])), "locations": unique(description.get("locations", [])),
             "events": unique(description.get("events", [])),
             "search_keywords": unique(description.get("search_keywords_vi", [])),
             "uncertainties": unique(description.get("uncertainties", [])),
-            "has_gemini": bool(record), "retrieval_text": retrieval_text(scene, description),
+            "has_gemini": bool(record), "has_object_detection": bool(detected_objects),
+            "retrieval_text": retrieval_text(scene, description, detected_objects),
             "provenance": {"semantic_scenes": f"workspace/semantic_scenes/{args.video_id}/scenes.parquet",
                            "gemini": record.get("provenance"), "asr_model": "faster-whisper-large-v3",
-                           "visual_model": "google/siglip2-so400m-patch14-384"},
+                           "visual_model": "google/siglip2-so400m-patch14-384",
+                           "object_model": "yolov8s-worldv2" if detected_objects else None},
         }
         documents.append(document)
     output.mkdir(parents=True, exist_ok=True)
@@ -87,6 +101,7 @@ def main() -> None:
     pd.DataFrame(flat).to_parquet(output / "scenes.parquet", index=False)
     report = {"schema_version": "0.2.0", "video_id": args.video_id, "documents": len(documents),
               "with_gemini": sum(doc["has_gemini"] for doc in documents),
+              "with_object_detection": sum(doc["has_object_detection"] for doc in documents),
               "with_asr": sum(bool(doc["asr_text"]) for doc in documents), "output": str(output)}
     (output / "report.json").write_text(json.dumps(report, ensure_ascii=False, indent=2), encoding="utf-8")
     print(json.dumps(report, ensure_ascii=False, indent=2))

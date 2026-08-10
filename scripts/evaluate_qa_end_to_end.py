@@ -13,6 +13,8 @@ from rapidfuzz.fuzz import ratio
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
+if hasattr(sys.stdout, "reconfigure"):
+    sys.stdout.reconfigure(encoding="utf-8")
 
 from aic_pipeline.offline_search_engine import OfflineSearchEngine
 from aic_pipeline.qa_gemini import GeminiQAEngine, qa_grounding_query
@@ -71,6 +73,8 @@ def main() -> None:
                          "answer_match": answer_match, "answer_similarity": score,
                          "confidence": answer["confidence"], "status": "completed",
                          "accepted_range_count": len(accepted),
+                         "object_grounding_used": answer.get("object_grounding_used", False),
+                         "object_crop_count": answer.get("object_crop_count", 0),
                          "latency_seconds": time.perf_counter() - started})
         except Exception as exc:
             rows.append({"query_id": label.query_id, "query": label.query_text_vi,

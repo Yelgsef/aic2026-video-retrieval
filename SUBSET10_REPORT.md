@@ -139,3 +139,21 @@ Rescore cùng prediction high-resolution, không gọi lại VQA:
 
 Multi-range labels vẫn là Gemini pseudo-label (`verified=false`). Chúng sửa được
 false negative do cảnh phát lại/lặp, nhưng không thay thế human verification.
+
+### Object-aware QA
+
+Pipeline bổ sung hai tầng object: YOLO-World chạy offline trên final keyframes
+để đưa object labels vào scene documents; Grounding DINO Tiny chỉ crop evidence
+khi query nhắc đến vật thể cụ thể. Full frame luôn được giữ cạnh crop để tránh
+mất bối cảnh. Các query hướng/vị trí được bỏ qua bởi object gate.
+
+| Metric | High-res, multi-range | Object-aware, gated |
+|---|---:|---:|
+| Frame hit rate | 0,8333 | 0,8333 |
+| Answer match rate | 0,75 | 0,75 |
+| Joint accuracy | 0,75 | 0,75 |
+| Mean latency | 14,512 giây | 17,093 giây |
+
+Object grounding không làm giảm accuracy trên 12 pseudo-query và đọc đúng biển
+số nhỏ, nhưng tăng latency khoảng 2,6 giây trung bình. Vì tập test nhỏ, nên xem
+đây là fallback có điều kiện cho QA chi tiết, không bật cho mọi query.

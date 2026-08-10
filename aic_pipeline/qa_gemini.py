@@ -14,6 +14,8 @@ from google.genai import types
 from PIL import Image, ImageDraw, ImageOps
 from pydantic import BaseModel, Field
 
+from .object_grounding import GroundingDinoCropper
+
 
 class QASelection(BaseModel):
     candidate_label: str = Field(description="Exactly one candidate label, for example C1")
@@ -50,6 +52,19 @@ class GeminiQAEngine:
         self.client = genai.Client(api_key=key,
                                    http_options=types.HttpOptions(timeout=request_timeout_ms))
         self.manifest = pd.read_parquet(self.root / "workspace" / "manifests" / "videos.parquet").set_index("video_id")
+        self._grounder: GroundingDinoCropper | bool | None = None
+
+    def _get_grounder(self) -> GroundingDinoCropper | None:
+        if self._grounder is None:
+            model_dir = self.root / "models" / "grounding-dino-tiny"
+            if not (model_dir / "config.json").exists():
+                self._grounder = False
+            else:
+                try:
+                    self._grounder = GroundingDinoCropper(model_dir)
+                except Exception:
+                    self._grounder = False
+        return self._grounder if isinstance(self._grounder, GroundingDinoCropper) else None
 
     def _decode(self, video_id: str, frame_id: int) -> Image.Image:
         path = str(self.manifest.loc[video_id].video_path)
@@ -71,12 +86,16 @@ class GeminiQAEngine:
         for index, candidate in enumerate(candidates):
             label = f"C{index + 1}"
             mapping[label] = candidate
-            image = ImageOps.fit(self._decode(str(candidate["video_id"]), int(candidate["best_frame_id"])),
+            source = candidate.get("_image")
+            if not isinstance(source, Image.Image):
+                source = self._decode(str(candidate["video_id"]), int(candidate["best_frame_id"]))
+            image = ImageOps.fit(source,
                                  (tile_w, tile_h), method=Image.Resampling.LANCZOS)
             x, y = index % cols * tile_w, index // cols * (tile_h + label_h)
             sheet.paste(image, (x, y))
+            crop_label = f" | crop:{candidate.get('_object_label')}" if candidate.get("_object_crop") else ""
             draw.text((x + 6, y + tile_h + 8),
-                      f"{label} | {candidate['video_id']} | frame {candidate['best_frame_id']}", fill="black")
+                      f"{label} | {candidate['video_id']} | frame {candidate['best_frame_id']}{crop_label}", fill="black")
         return sheet, mapping
 
     def answer(self, question: str, retrieval_results: list[dict[str, Any]], maximum_candidates: int = 24) -> dict[str, Any]:
@@ -150,7 +169,23 @@ Rules:
         for frame_id in detail_ids:
             item = dict(candidate)
             item["best_frame_id"] = frame_id
+            item["_image"] = self._decode(str(item["video_id"]), frame_id)
             detail_candidates.append(item)
+        object_crop_count = 0
+        grounder = self._get_grounder()
+        if grounder and detail_candidates:
+            try:
+                grounded = grounder.crop([item["_image"] for item in detail_candidates], question, maximum=4)
+                for detection in grounded:
+                    base = dict(detail_candidates[int(detection["image_index"])])
+                    base["_image"] = detection["image"]
+                    base["_object_crop"] = True
+                    base["_object_label"] = detection["label"]
+                    base["_object_score"] = detection["score"]
+                    detail_candidates.append(base)
+                    object_crop_count += 1
+            except Exception:
+                object_crop_count = 0
         if detail_candidates:
             detail_sheet, detail_mapping = self._sheet(detail_candidates)
             detail_prompt = f"""Answer the visual question from these high-resolution views of one scene.
@@ -180,4 +215,5 @@ candidate_label must be one of {', '.join(detail_mapping)}. Keep the answer shor
                 "answer": selection.answer, "confidence": selection.confidence,
                 "evidence_vi": selection.evidence_vi, "candidate_label": label,
                 "model": used_model, "candidate_count": len(candidates),
-                "refined_answer": refined_answer}
+                "refined_answer": refined_answer, "object_grounding_used": object_crop_count > 0,
+                "object_crop_count": object_crop_count}
