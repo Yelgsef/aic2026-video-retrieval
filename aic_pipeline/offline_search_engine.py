@@ -79,7 +79,7 @@ class OfflineSearchEngine:
                 f"SELECT rowid FROM {table} WHERE {table} MATCH ? ORDER BY bm25({table}) LIMIT ?",
                 (expression, limit))]
 
-    def _siglip_scores(self, variants: list[str]) -> tuple[np.ndarray, np.ndarray]:
+    def _siglip_scores(self, variants: list[str]) -> tuple[np.ndarray, np.ndarray, list[list[int]]]:
         inputs = self.siglip_processor(text=variants, padding="max_length", truncation=True, max_length=64,
                                        return_tensors="pt").to(self.device)
         with torch.inference_mode():
@@ -88,12 +88,24 @@ class OfflineSearchEngine:
         frame_scores = np.asarray((self.image_vectors @ vectors.T).max(axis=1), dtype=np.float32)
         scores = np.full(len(self.scenes), -np.inf, dtype=np.float32)
         best_frames = np.full(len(self.scenes), -1, dtype=np.int64)
+        scene_candidates: list[list[tuple[float, int]]] = [[] for _ in range(len(self.scenes))]
         for frame_row, score in enumerate(frame_scores):
             scene_row = int(self.frames.iloc[frame_row].scene_row)
+            frame_id = int(self.frames.iloc[frame_row].frame_id)
+            scene_candidates[scene_row].append((float(score), frame_id))
             if score > scores[scene_row]:
                 scores[scene_row] = score
-                best_frames[scene_row] = int(self.frames.iloc[frame_row].frame_id)
-        return scores, best_frames
+                best_frames[scene_row] = frame_id
+        top_frames = []
+        for candidates in scene_candidates:
+            selected = []
+            for _, frame_id in sorted(candidates, reverse=True):
+                if all(abs(frame_id - existing) >= 10 for existing in selected):
+                    selected.append(frame_id)
+                if len(selected) == 4:
+                    break
+            top_frames.append(selected)
+        return scores, best_frames, top_frames
 
     def _bge_scores(self, query: str) -> np.ndarray:
         inputs = self.bge_tokenizer([query], padding=True, truncation=True, max_length=512,
@@ -123,7 +135,7 @@ class OfflineSearchEngine:
             task = route_query(query)
             plan = build_query_plan(task.retrieval_query)
             weights = intent_weights(plan.intent)
-            visual, best_frames = self._siglip_scores(list(plan.variants))
+            visual, best_frames, top_frames = self._siglip_scores(list(plan.variants))
             semantic = self._bge_scores(plan.normalized)
             orders = {
                 "visual": np.argsort(-visual)[:candidate_k].tolist(),
@@ -154,8 +166,10 @@ class OfflineSearchEngine:
                                 "scene_index": int(row.scene_index), "start_time": float(row.start_time),
                                 "end_time": float(row.end_time),
                                 "best_frame_id": int(best_frames[row_id]),
+                                "top_visual_frame_ids": top_frames[row_id],
                                 "representative_frame_ids": [int(value) for value in row.representative_frame_ids],
-                                "asr_text": "" if pd.isna(row.asr_text) else str(row.asr_text)})
+                                "asr_text": "" if pd.isna(row.asr_text) else str(row.asr_text),
+                                "scene_context": str(row.retrieval_text)[:600]})
             submissions = build_ranked_submissions(task.task, results, min(100, top_k)) if task.task != "TRAKE" else []
             return {"query": query, "task_plan": task.to_dict(), "query_plan": plan.to_dict(), "weights": weights,
                     "reranker_used": use_reranker, "results": results, "submissions": submissions,

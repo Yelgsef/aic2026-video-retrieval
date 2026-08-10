@@ -84,12 +84,9 @@ class GeminiQAEngine:
         # Cover more scenes while showing two temporal views per scene. A single
         # pooled best frame often misses the small object asked about in QA.
         for scene_rank, result in enumerate(retrieval_results[: max(1, maximum_candidates // 2)], start=1):
-            frame_ids = [int(result["best_frame_id"])]
-            representatives = [int(value) for value in result.get("representative_frame_ids", [])]
-            if representatives:
-                alternate = representatives[len(representatives) // 2]
-                if alternate not in frame_ids:
-                    frame_ids.append(alternate)
+            frame_ids = [int(value) for value in result.get("top_visual_frame_ids", [])[:2]]
+            if not frame_ids:
+                frame_ids = [int(result["best_frame_id"])]
             for frame_id in frame_ids:
                 candidate = dict(result)
                 candidate["best_frame_id"] = frame_id
@@ -137,8 +134,50 @@ Rules:
         if label not in mapping:
             raise ValueError(f"Gemini returned invalid candidate label: {label}")
         candidate = mapping[label]
+        refined_answer = False
+        # Second pass: inspect several full-size views from only the selected
+        # scene. This preserves broad scene recall while making OCR and small
+        # objects much easier than on a 24-tile contact sheet.
+        detail_ids = []
+        for frame_id in (candidate.get("top_visual_frame_ids", [])
+                         + candidate.get("representative_frame_ids", [])):
+            frame_id = int(frame_id)
+            if frame_id not in detail_ids:
+                detail_ids.append(frame_id)
+            if len(detail_ids) == 4:
+                break
+        detail_candidates = []
+        for frame_id in detail_ids:
+            item = dict(candidate)
+            item["best_frame_id"] = frame_id
+            detail_candidates.append(item)
+        if detail_candidates:
+            detail_sheet, detail_mapping = self._sheet(detail_candidates)
+            detail_prompt = f"""Answer the visual question from these high-resolution views of one scene.
+Question: {question}
+Select the clearest evidence frame. Read exact visible text carefully. Do not infer hidden facts.
+candidate_label must be one of {', '.join(detail_mapping)}. Keep the answer short.
+"""
+            try:
+                detail_response = self.client.models.generate_content(
+                    model=used_model, contents=[detail_prompt, detail_sheet],
+                    config=types.GenerateContentConfig(
+                        response_mime_type="application/json", response_schema=QASelection,
+                        temperature=0.0, max_output_tokens=512,
+                        thinking_config=types.ThinkingConfig(thinking_level="MINIMAL")))
+                refined = QASelection.model_validate_json(detail_response.text)
+                refined_label = refined.candidate_label.strip().upper()
+                if refined_label in detail_mapping:
+                    selection = refined
+                    label = refined_label
+                    candidate = detail_mapping[refined_label]
+                    refined_answer = True
+            except Exception:
+                # The first pass remains a valid bounded-latency fallback.
+                pass
         return {"task": "QA", "video_id": str(candidate["video_id"]),
                 "frame_id": int(candidate["best_frame_id"]), "scene_index": int(candidate["scene_index"]),
                 "answer": selection.answer, "confidence": selection.confidence,
                 "evidence_vi": selection.evidence_vi, "candidate_label": label,
-                "model": used_model, "candidate_count": len(candidates)}
+                "model": used_model, "candidate_count": len(candidates),
+                "refined_answer": refined_answer}

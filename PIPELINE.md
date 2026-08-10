@@ -354,6 +354,11 @@ nhưng joint accuracy vẫn là 0,3333. Do đó TRAKE baseline đã được c�
 kể; QA vẫn cần validation có nhiều accepted scene/frame ranges và reranking tốt
 hơn cho các cảnh lặp lại.
 
+QA sau đó được bổ sung frame-level SigLIP evidence reranking và high-resolution
+second pass trên tối đa bốn frame của scene đã chọn. Answer match tăng lên 0,75
+và joint accuracy tăng lên 0,50; frame hit giữ 0,50. Median latency là 9,381
+giây, P90 10,908 giây và mean 14,512 giây do hai API outliers khoảng 40 giây.
+
 ## 10. Trạng thái chạy trên dataset
 
 - Code visual pipeline đã build tới final SO400M embeddings.

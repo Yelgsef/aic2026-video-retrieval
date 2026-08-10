@@ -29,10 +29,13 @@ def main() -> None:
     parser.add_argument("--index", type=Path, default=ROOT / "workspace/offline_index_subset10")
     parser.add_argument("--output", type=Path, default=ROOT / "workspace/validation/qa_end_to_end_subset10.json")
     parser.add_argument("--limit", type=int, default=0)
+    parser.add_argument("--query-id", action="append", default=[])
     parser.add_argument("--candidates", type=int, default=24)
     args = parser.parse_args()
     labels = pd.read_csv(args.labels)
     labels = labels.loc[labels.query_type.eq("QA")]
+    if args.query_id:
+        labels = labels.loc[labels.query_id.isin(args.query_id)]
     if args.limit:
         labels = labels.head(args.limit)
     retrieval = OfflineSearchEngine(ROOT, args.index)

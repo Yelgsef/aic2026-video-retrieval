@@ -101,3 +101,23 @@ QA được thêm grounding-query normalization và hai temporal views cho mỗi
 QA chỉ cải thiện evidence coverage. Một số pseudo-query mô tả cảnh lặp lại nên
 Gemini trả đúng nội dung từ một scene tương đương nhưng vẫn bị frame-range label
 tính là sai. Cần strong labels có nhiều accepted ranges để đánh giá công bằng.
+
+### QA high-resolution refinement
+
+QA cuối cùng dùng frame-level SigLIP reranking: mỗi scene giữ tối đa bốn frame
+điểm cao có khoảng cách thời gian. Lượt Gemini đầu chọn scene/frame từ 24
+thumbnail; lượt hai mở tối đa bốn view của scene đã chọn để đọc chi tiết ở độ
+phân giải cao. Nếu lượt hai lỗi mạng, kết quả lượt một vẫn được dùng.
+
+| QA metric | Baseline | Grounding | High-res refine |
+|---|---:|---:|---:|
+| Frame hit rate | 0,4167 | 0,50 | 0,50 |
+| Answer match rate | 0,5833 | 0,5833 | 0,75 |
+| Joint accuracy | 0,3333 | 0,3333 | 0,50 |
+| Mean latency | 8,534 giây | 7,989 giây | 14,512 giây |
+| Median latency | - | - | 9,381 giây |
+| P90 latency | - | - | 10,908 giây |
+
+Mean latency bị kéo lên bởi hai Gemini outliers khoảng 40 giây; 10/12 query còn
+lại hoàn tất quanh 9–11 giây. Accuracy vẫn được tính trên pseudo-label và cần
+kiểm tra lại với nhiều accepted ranges cho các cảnh lặp.
