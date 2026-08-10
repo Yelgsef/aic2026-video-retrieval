@@ -130,7 +130,8 @@ Không loại chỉ vì một chuỗi xuất hiện nhiều lần, vì logo/tên
 Nhánh OCR độ phân giải gốc đã được bổ sung sau final-keyframe selection:
 
 ```text
-Final keyframe gốc -> PP-OCRv6 tiếng Việt -> polygon + confidence
+Final keyframe gốc -> PP-OCRv6 tiếng Việt (GPU, sequential decode, batch 8)
+  -> polygon + confidence
   -> loại timestamp/watermark
   -> confidence thấp: crop JPEG -> Gemini Batch minimal thinking
   -> merge local/Gemini -> scene document

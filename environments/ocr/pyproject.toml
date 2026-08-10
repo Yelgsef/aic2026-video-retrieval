@@ -4,9 +4,10 @@ version = "0.1.0"
 requires-python = ">=3.10,<3.11"
 dependencies = [
   "numpy>=1.26,<2.3",
+  "nvidia-cudnn-cu12>=9,<10; sys_platform == 'win32'",
   "opencv-python-headless>=4.10",
   "paddleocr>=3.3,<4",
-  "paddlepaddle==3.2.0",
+  "paddlepaddle-gpu==3.2.0",
   "pandas>=2.2",
   "pillow>=11",
   "pyarrow>=18",
@@ -14,3 +15,11 @@ dependencies = [
 
 [tool.uv]
 package = false
+
+[tool.uv.sources]
+paddlepaddle-gpu = { index = "paddle-cu126" }
+
+[[tool.uv.index]]
+name = "paddle-cu126"
+url = "https://www.paddlepaddle.org.cn/packages/stable/cu126/"
+explicit = true
