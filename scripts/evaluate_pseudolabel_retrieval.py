@@ -21,12 +21,13 @@ def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("--labels", type=Path, default=ROOT / "workspace" / "validation" / "review_pack_50" / "annotations_autolabeled.csv")
     parser.add_argument("--output", type=Path, default=ROOT / "workspace" / "validation" / "pseudolabel_retrieval_eval.json")
+    parser.add_argument("--index", type=Path, default=ROOT / "workspace" / "offline_index")
     parser.add_argument("--limit", type=int, default=0)
     args = parser.parse_args()
     labels = pd.read_csv(args.labels)
     if args.limit:
         labels = labels.head(args.limit)
-    engine = OfflineSearchEngine(ROOT)
+    engine = OfflineSearchEngine(ROOT, args.index)
     rows = []
     for label in labels.itertuples(index=False):
         started = time.perf_counter()
@@ -38,6 +39,7 @@ def main() -> None:
                      "rank": rank, "latency_seconds": time.perf_counter() - started})
         print(json.dumps(rows[-1], ensure_ascii=False), flush=True)
     report = {"pseudo_labels": True, "count": len(rows), "mean_latency_seconds": sum(r["latency_seconds"] for r in rows) / len(rows),
+              "mean_reciprocal_rank": sum(1 / r["rank"] if r["rank"] else 0 for r in rows) / len(rows),
               "recall_at_1": sum(r["rank"] == 1 for r in rows) / len(rows),
               "recall_at_5": sum(r["rank"] is not None and r["rank"] <= 5 for r in rows) / len(rows),
               "recall_at_10": sum(r["rank"] is not None and r["rank"] <= 10 for r in rows) / len(rows),

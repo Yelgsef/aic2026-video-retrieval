@@ -45,6 +45,11 @@ def now() -> str:
     return datetime.now(timezone.utc).isoformat()
 
 
+def state_name(value: Any) -> str:
+    """Normalize SDK enums across google-genai releases."""
+    return str(getattr(value, "name", value)).removeprefix("JobState.")
+
+
 def db() -> sqlite3.Connection:
     BATCH_ROOT.mkdir(parents=True, exist_ok=True)
     conn = sqlite3.connect(DB_PATH)
@@ -155,10 +160,14 @@ def prepare(args: argparse.Namespace) -> None:
 def client():
     from dotenv import load_dotenv
     from google import genai
+    from google.genai import types
     load_dotenv(ROOT / ".env")
     if not os.getenv("GEMINI_API_KEY"):
         raise RuntimeError("GEMINI_API_KEY is not configured")
-    return genai.Client(api_key=os.environ["GEMINI_API_KEY"])
+    retry = types.HttpRetryOptions(attempts=2, initial_delay=1, max_delay=4,
+                                   http_status_codes=[429, 500, 502, 503, 504])
+    return genai.Client(api_key=os.environ["GEMINI_API_KEY"],
+                        http_options=types.HttpOptions(timeout=120_000, retry_options=retry))
 
 
 def find_job(conn: sqlite3.Connection, video_id: str) -> sqlite3.Row:
@@ -176,15 +185,19 @@ def submit(args: argparse.Namespace) -> None:
         if row["batch_job_name"]:
             print(f"Already submitted: {row['batch_job_name']}")
             return
-        uploaded = api.files.upload(file=row["jsonl_path"], config=types.UploadFileConfig(
-            display_name=f"aic-{args.video_id}-{row['input_hash'][:12]}", mime_type="jsonl"))
-        conn.execute("UPDATE jobs SET uploaded_file_name=?,state='UPLOADED',updated_at=? WHERE input_hash=?",
-                     (uploaded.name, now(), row["input_hash"]))
-        job = api.batches.create(model=row["model"], src=uploaded.name,
+        uploaded_name = row["uploaded_file_name"]
+        if not uploaded_name:
+            uploaded = api.files.upload(file=row["jsonl_path"], config=types.UploadFileConfig(
+                display_name=f"aic-{args.video_id}-{row['input_hash'][:12]}", mime_type="jsonl"))
+            uploaded_name = uploaded.name
+            conn.execute("UPDATE jobs SET uploaded_file_name=?,state='UPLOADED',updated_at=? WHERE input_hash=?",
+                         (uploaded_name, now(), row["input_hash"]))
+        job = api.batches.create(model=args.model, src=uploaded_name,
                                  config={"display_name": f"aic-{args.video_id}-{row['input_hash'][:12]}"})
-        conn.execute("UPDATE jobs SET batch_job_name=?,state=?,updated_at=? WHERE input_hash=?",
-                     (job.name, str(job.state), now(), row["input_hash"]))
-        print(json.dumps({"job": job.name, "state": str(job.state)}, indent=2))
+        state = state_name(job.state)
+        conn.execute("UPDATE jobs SET model=?,batch_job_name=?,state=?,updated_at=? WHERE input_hash=?",
+                     (args.model, job.name, state, now(), row["input_hash"]))
+        print(json.dumps({"job": job.name, "state": state}, indent=2))
 
 
 def status(args: argparse.Namespace, download_result: bool = False) -> None:
@@ -194,7 +207,7 @@ def status(args: argparse.Namespace, download_result: bool = False) -> None:
         if not row["batch_job_name"]:
             raise ValueError("Batch is prepared but has not been submitted")
         job = api.batches.get(name=row["batch_job_name"])
-        state = str(job.state)
+        state = state_name(job.state)
         result_name = getattr(getattr(job, "dest", None), "file_name", None)
         conn.execute("UPDATE jobs SET state=?,result_file_name=?,updated_at=? WHERE input_hash=?",
                      (state, result_name, now(), row["input_hash"]))
@@ -213,7 +226,7 @@ def main() -> None:
     for name in ("prepare", "submit", "status", "download"):
         item = sub.add_parser(name)
         item.add_argument("--video-id", required=True)
-        item.add_argument("--model", default="gemini-2.5-flash")
+        item.add_argument("--model", default="gemini-3.6-flash")
     args = parser.parse_args()
     if args.command == "prepare":
         prepare(args)

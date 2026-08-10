@@ -158,14 +158,24 @@ def reconcile(connection: sqlite3.Connection, stale_seconds: int) -> dict[str, i
     return {"reclaimed": reclaimed, "artifacts_reconciled": completed}
 
 
-def claim(connection: sqlite3.Connection, shard: int, worker_id: str, stages: tuple[str, ...]) -> sqlite3.Row | None:
+def claim(connection: sqlite3.Connection, shard: int, worker_id: str, stages: tuple[str, ...],
+          video_ids: tuple[str, ...] = ()) -> sqlite3.Row | None:
     config = configuration_hash()
     connection.execute("BEGIN IMMEDIATE")
     try:
         placeholders = ",".join("?" for _ in stages)
+        shard_filter = " AND shard=?"
+        video_filter = ""
+        parameters: list[object] = [config, shard, *stages]
+        if video_ids:
+            # An explicit validation subset must work regardless of the shard
+            # count used when the persistent database was first initialized.
+            shard_filter = ""
+            video_filter = f" AND video_id IN ({','.join('?' for _ in video_ids)})"
+            parameters = [config, *stages, *video_ids]
         rows = connection.execute(
-            f"SELECT * FROM jobs WHERE config_hash=? AND shard=? AND status IN ('pending','retry') AND stage IN ({placeholders}) ORDER BY video_id, CASE stage WHEN 'omnishot' THEN 1 WHEN 'sampling' THEN 2 WHEN 'siglip-base' THEN 3 WHEN 'siglip-so400m-final' THEN 4 ELSE 5 END",
-            (config, shard, *stages),
+            f"SELECT * FROM jobs WHERE config_hash=?{shard_filter} AND status IN ('pending','retry') AND stage IN ({placeholders}){video_filter} ORDER BY video_id, CASE stage WHEN 'omnishot' THEN 1 WHEN 'sampling' THEN 2 WHEN 'siglip-base' THEN 3 WHEN 'siglip-so400m-final' THEN 4 WHEN 'asr-large-v3' THEN 5 WHEN 'semantic-scenes' THEN 6 ELSE 7 END",
+            parameters,
         ).fetchall()
         selected = None
         for row in rows:
@@ -242,6 +252,8 @@ def main() -> None:
     parser.add_argument("--worker-id", default=f"{os.environ.get('COMPUTERNAME','worker')}:{os.getpid()}")
     parser.add_argument("--max-jobs", type=int, default=0, help="0 means run until the queue is empty.")
     parser.add_argument("--stages", nargs="+", choices=STAGES, default=STAGES)
+    parser.add_argument("--video-ids", nargs="+", default=[],
+                        help="Restrict work to an explicit validation subset.")
     parser.add_argument("--max-attempts", type=int, default=3)
     parser.add_argument("--stale-seconds", type=int, default=900)
     args = parser.parse_args()
@@ -265,7 +277,8 @@ def main() -> None:
     reconcile(connection, args.stale_seconds)
     processed = 0
     while not STOP_REQUESTED and (args.max_jobs == 0 or processed < args.max_jobs):
-        row = claim(connection, args.shard_index, args.worker_id, tuple(args.stages))
+        row = claim(connection, args.shard_index, args.worker_id, tuple(args.stages),
+                    tuple(args.video_ids))
         if row is None:
             break
         started = time.time()

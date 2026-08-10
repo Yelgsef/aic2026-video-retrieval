@@ -321,12 +321,32 @@ Recall@10 = 0,78; Recall@20 = 0,84; Recall@50 = 0,88; Recall@100 = 1,00;
 warm latency trung bình khoảng 0,253 giây/query. Các số này chỉ dùng phát hiện
 lỗi pipeline vì nhãn do Gemini tạo và toàn bộ mẫu chỉ thuộc một video.
 
+### Validation subset 10 video (2026-08-10)
+
+Đã chạy end-to-end trên 10 video thuộc 8 nhóm, tổng 2,1 giờ video và khoảng
+1,14 GB. Toàn bộ 70/70 artifact của bảy preprocessing stages hợp lệ. Kết quả:
+
+- 648 semantic scenes và 3.744 final-frame vectors SO400M.
+- 648 BGE-M3 scene vectors.
+- 10 Gemini Batch jobs bằng `gemini-3.6-flash` đều thành công.
+- 647/648 scene có Gemini OCR/caption/entities; một scene bị bộ lọc
+  `RECITATION` và fallback sang ASR + visual.
+- Không video nào bị bỏ qua khi dựng `workspace/offline_index_subset10`.
+
+Đánh giá lại 50 pseudo-query của `L21_V001` với chín video còn lại làm hard
+negatives: MRR = 0,6180; Recall@1 = 0,50; Recall@5 = 0,78; Recall@10 = 0,92;
+Recall@20 = 0,98; Recall@100 = 0,98. Latency trung bình là 1,126 giây/query.
+Riêng KIS có MRR = 0,6562 và Recall@5 = 0,8158; QA retrieval có MRR = 0,4972
+và Recall@5 = 0,6667. Đây vẫn là pseudo-label tập trung vào một video, chưa
+thay thế strong validation đa video.
+
 ## 10. Trạng thái chạy trên dataset
 
 - Code visual pipeline đã build tới final SO400M embeddings.
 - Code Whisper ASR và semantic-scene merging đã build.
 - Code Gemini contact-sheet/Batch JSONL đã build nhưng chưa submit toàn dataset.
-- Offline hybrid baseline đã smoke test trên `L21_V001`.
+- Offline hybrid pipeline đã chạy trên subset 10 video; index hoàn chỉnh nằm
+  tại `workspace/offline_index_subset10`.
 - BGE-M3 checkpoint đã được lưu tại `models/bge-m3`.
 - BGE Reranker v2 M3 đã được lưu tại `models/bge-reranker-v2-m3`.
 - Chưa chạy production trên toàn bộ khoảng 1.600 video.
