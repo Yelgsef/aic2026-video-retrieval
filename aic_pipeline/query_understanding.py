@@ -27,6 +27,9 @@ class QueryPlan:
     original: str
     normalized: str
     intent: str
+    visual_query: str
+    ocr_query: str
+    asr_query: str
     entities: tuple[str, ...]
     variants: tuple[str, ...]
 
@@ -47,13 +50,39 @@ def build_query_plan(query: str) -> QueryPlan:
     intent = "ocr" if any(value in folded for value in OCR_MARKERS) else (
         "visual" if any(value in folded for value in VISUAL_MARKERS) else (
             "asr" if any(value in folded for value in ASR_MARKERS) else "visual"))
+    quoted = re.findall(r'["“”]([^"“”]{2,})["“”]', normalized)
+    uppercase, run = [], []
+    for token in re.findall(r"[\wÀ-ỹĐđ]+", normalized):
+        if token.isdigit() or (len(token) >= 2 and token.isupper()):
+            run.append(token)
+        else:
+            if run and any(part.isalpha() for part in run):
+                uppercase.append(" ".join(run))
+            run = []
+    if run and any(part.isalpha() for part in run):
+        uppercase.append(" ".join(run))
+    marker_capture = re.search(
+        r"(?:dòng chữ|chữ|logo|tiêu đề|biển (?:báo|cảnh báo)|ghi)\s+(.+?)(?:[,.]|$)",
+        normalized, flags=re.IGNORECASE)
+    marker_value = marker_capture.group(1).strip(' "“”') if marker_capture else ""
+    ocr_parts = quoted + uppercase
+    if not ocr_parts and marker_value:
+        ocr_parts.append(marker_value)
+    ocr_query = " ".join(dict.fromkeys(part.strip(' "“”') for part in ocr_parts if len(part.strip()) >= 2))
+    visual_query = normalized
+    if marker_capture:
+        visual_query = (normalized[:marker_capture.start()] + normalized[marker_capture.end():]).strip(" ,.")
+    if not visual_query:
+        visual_query = normalized
+    asr_query = normalized if intent == "asr" else ""
     entities = tuple(key for key in ENGLISH_GLOSSES if key in folded)
-    english = normalized
+    english = visual_query
     for phrase in sorted(entities, key=len, reverse=True):
         english = re.sub(re.escape(phrase), ENGLISH_GLOSSES[phrase], english, flags=re.IGNORECASE)
-    variants = [normalized]
-    if english.casefold() != normalized.casefold():
+    variants = [visual_query]
+    if english.casefold() != visual_query.casefold():
         variants.append(english)
     if entities:
         variants.append(", ".join(ENGLISH_GLOSSES[value] for value in entities))
-    return QueryPlan(query, normalized, intent, entities, tuple(dict.fromkeys(variants)))
+    return QueryPlan(query, normalized, intent, visual_query, ocr_query, asr_query,
+                     entities, tuple(dict.fromkeys(variants)))

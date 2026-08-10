@@ -48,6 +48,7 @@ def main() -> None:
     parser.add_argument("--field-aware", action="store_true")
     parser.add_argument("--short-clip", action="store_true")
     parser.add_argument("--clip-seconds", type=float, default=2.0)
+    parser.add_argument("--motion-rerank", action="store_true")
     args = parser.parse_args()
     labels = [json.loads(x) for x in args.labels.read_text(encoding="utf-8").splitlines() if x.strip()]
     engine = OfflineSearchEngine(ROOT, args.index)
@@ -58,7 +59,8 @@ def main() -> None:
         events = [x["description_vi"] for x in label["events"]]
         selected_video, candidates, windows = choose_video(engine, events, args.fusion_mode, args.field_aware)
         alignment = aligner.align(selected_video, events, windows, decoder=args.decoder,
-                                  short_clip=args.short_clip, clip_seconds=args.clip_seconds)
+                                  short_clip=args.short_clip, clip_seconds=args.clip_seconds,
+                                  motion_rerank=args.motion_rerank)
         predicted = alignment["events"]
         hits = [selected_video == label["video_id"] and truth["start_frame"] <= pred["frame_id"] < truth["end_frame_exclusive"]
                 for truth, pred in zip(label["events"], predicted)]
@@ -74,6 +76,7 @@ def main() -> None:
     report = {"pseudo_labels": True, "decoder": args.decoder, "fusion_mode": args.fusion_mode,
               "field_aware": args.field_aware, "count": len(rows),
               "short_clip": args.short_clip, "clip_seconds": args.clip_seconds if args.short_clip else None,
+              "motion_rerank": args.motion_rerank,
               "video_accuracy": sum(r["video_hit"] for r in rows) / len(rows),
               "event_hit_rate": sum(sum(r["event_hits"]) for r in rows) / event_count,
               "sequence_accuracy": sum(r["all_events_hit"] for r in rows) / len(rows),

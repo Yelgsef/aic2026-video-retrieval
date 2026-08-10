@@ -1,0 +1,18 @@
+<!doctype html>
+<html lang="vi"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>AIC 2026 Retrieval</title><style>
+body{margin:0;background:#10141b;color:#e9eef7;font:15px system-ui}main{max-width:1280px;margin:auto;padding:18px}
+.bar{display:grid;grid-template-columns:1fr auto auto;gap:8px;position:sticky;top:0;background:#10141bee;padding:10px 0}
+input,button,select{font:inherit;border:1px solid #3b4657;border-radius:8px;padding:11px;background:#1a2230;color:inherit}button{cursor:pointer;background:#2767d8}.grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(260px,1fr));gap:12px}.card{background:#19212d;border:1px solid #303b4b;border-radius:10px;padding:11px}.meta{color:#9fb0c7;font-size:13px}.score{color:#72d69c}pre{white-space:pre-wrap;word-break:break-word}.busy{opacity:.6}
+</style></head><body><main><div class="bar"><input id="q" placeholder="Nhập KIS, QA hoặc chuỗi TRAKE…" autofocus><select id="limit"><option>30</option><option>50</option><option>100</option></select><button id="go">Tìm</button></div><p id="status"></p><section id="results" class="grid"></section></main>
+<script>
+const q=document.querySelector('#q'),go=document.querySelector('#go'),status=document.querySelector('#status'),results=document.querySelector('#results');
+const esc=s=>String(s??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+async function search(){let text=q.value.trim();if(!text)return;go.disabled=true;document.body.classList.add('busy');status.textContent='Đang truy vấn…';results.innerHTML='';
+try{let route=await fetch('/route',{method:'POST',body:JSON.stringify({query:text})}).then(r=>r.json());let path=route.task==='QA'?'/answer':route.task==='TRAKE'?'/trake':'/query';let body={query:text,top_k:+document.querySelector('#limit').value};let data=await fetch(path,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)}).then(r=>r.json());
+status.textContent=`${route.task} · ${data.latency_seconds?.toFixed?.(2)??'-'} giây`;
+if(path==='/trake'){results.innerHTML=(data.alignment?.events||[]).map(x=>`<article class=card><b>Sự kiện ${x.event_index+1}</b><p>${esc(x.event)}</p><div class=meta>${esc(x.frame_id)} · ${x.pts_time.toFixed(2)}s</div></article>`).join('');return}
+if(path==='/answer'){status.textContent+=` · ${data.answer?.answer??''}`;data=data.retrieval}
+results.innerHTML=(data.results||[]).map(x=>`<article class=card><b>#${x.rank} ${esc(x.video_id)}</b><div class=score>${x.fusion_score.toFixed(4)}</div><div class=meta>scene ${x.scene_index} · ${x.start_time.toFixed(2)}–${x.end_time.toFixed(2)}s · frame ${x.best_frame_id}</div><p>${esc(x.scene_context).slice(0,360)}</p><button onclick="navigator.clipboard.writeText('${esc(x.video_id)},${x.best_frame_id}')">Copy</button></article>`).join('');
+}catch(e){status.textContent='Lỗi: '+e}finally{go.disabled=false;document.body.classList.remove('busy')}}go.onclick=search;q.onkeydown=e=>{if(e.key==='Enter')search()};
+</script></body></html>

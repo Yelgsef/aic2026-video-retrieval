@@ -35,13 +35,13 @@ def load_gemini(path: Path) -> dict[str, dict[str, Any]]:
 
 
 def retrieval_text(scene: Any, description: dict[str, Any], detected_objects: list[str] | None = None,
-                   searchable_ocr: list[str] | None = None) -> str:
+                   searchable_ocr: list[str] | None = None, normalized_asr: str | None = None) -> str:
     ocr = searchable_ocr if searchable_ocr is not None else unique(
         [item.get("text", "") for item in description.get("ocr_lines", [])])
     sections = [
         ("Nội dung hình ảnh", [description.get("summary_vi", "")]),
         ("Chữ trong hình", ocr),
-        ("Lời nói", [scene.asr_exact, scene.asr_context]),
+        ("Lời nói", [normalized_asr or scene.asr_exact, scene.asr_context]),
         ("Người", description.get("people", [])),
         ("Vật thể", list(description.get("objects", [])) + list(detected_objects or [])),
         ("Hành động", description.get("actions", [])),
@@ -73,6 +73,11 @@ def main() -> None:
             labels = (group.sort_values("confidence", ascending=False)
                       .drop_duplicates("label").head(30).label.astype(str).tolist())
             detected_by_scene[int(scene_index)] = labels
+    fullres_path = ROOT / "workspace" / "ocr_fullres" / args.video_id / "regions.parquet"
+    fullres = pd.read_parquet(fullres_path) if fullres_path.exists() else pd.DataFrame()
+    asr_normalized_path = ROOT / "workspace" / "asr_normalization" / args.video_id / "normalized.json"
+    asr_segments = (json.loads(asr_normalized_path.read_text(encoding="utf-8")).get("segments", [])
+                    if asr_normalized_path.exists() else [])
     output = args.output_dir or ROOT / "workspace" / "scene_documents" / args.video_id
     documents = []
     for scene in scenes.sort_values("scene_index").itertuples(index=False):
@@ -83,13 +88,27 @@ def main() -> None:
         ocr_text_raw = unique([item.get("text", "") for item in ocr_lines])
         ocr_text, ocr_filtered = filter_ocr_lines(
             ocr_lines, recurrence=ocr_recurrence, scene_count=scene_count)
+        fullres_ocr: list[str] = []
+        if not fullres.empty:
+            regions = fullres.loc[(fullres.frame_id >= int(scene.start_frame))
+                                  & (fullres.frame_id < int(scene.end_frame_exclusive))
+                                  & fullres.searchable.astype(bool)]
+            text_column = "final_text" if "final_text" in regions else "text_raw"
+            fullres_ocr = unique(regions[text_column].astype(str).tolist())
+        ocr_text_raw = unique(ocr_text_raw + fullres_ocr)
+        ocr_text = unique(ocr_text + fullres_ocr)
+        normalized_parts = [str(item["normalized_text"]).strip() for item in asr_segments
+                            if float(item["end"]) > float(scene.start_time)
+                            and float(item["start"]) < float(scene.end_time)]
+        normalized_asr = " ".join(part for part in normalized_parts if part) or str(scene.asr_exact or "")
         document = {
             "schema_version": "0.3.0", "document_id": str(scene.scene_id), "video_id": args.video_id,
             "scene_index": int(scene.scene_index), "start_frame": int(scene.start_frame),
             "end_frame_exclusive": int(scene.end_frame_exclusive), "start_time": float(scene.start_time),
             "end_time": float(scene.end_time), "shot_ids": [int(v) for v in scene.shot_ids],
             "representative_frame_ids": [int(v) for v in scene.representative_frame_ids],
-            "asr_text": str(scene.asr_exact or ""), "asr_context": str(scene.asr_context or ""),
+            "asr_text_raw": str(scene.asr_exact or ""), "asr_text": normalized_asr,
+            "asr_context": str(scene.asr_context or ""),
             "visual_summary": str(description.get("summary_vi", "")), "ocr_lines": ocr_lines,
             "ocr_text_raw": ocr_text_raw, "ocr_text": ocr_text, "ocr_filtered": ocr_filtered,
             "people": unique(description.get("people", [])),
@@ -100,10 +119,13 @@ def main() -> None:
             "search_keywords": unique(description.get("search_keywords_vi", [])),
             "uncertainties": unique(description.get("uncertainties", [])),
             "has_gemini": bool(record), "has_object_detection": bool(detected_objects),
-            "retrieval_text": retrieval_text(scene, description, detected_objects, ocr_text),
+            "has_fullres_ocr": bool(fullres_ocr),
+            "retrieval_text": retrieval_text(scene, description, detected_objects, ocr_text, normalized_asr),
             "provenance": {"semantic_scenes": f"workspace/semantic_scenes/{args.video_id}/scenes.parquet",
                            "gemini": record.get("provenance"), "asr_model": "faster-whisper-large-v3",
+                           "asr_normalization": "gemini-conditional" if asr_segments else None,
                            "visual_model": "google/siglip2-so400m-patch14-384",
+                           "fullres_ocr_model": "PP-OCRv6-medium-vi" if fullres_ocr else None,
                            "object_model": "yolov8s-worldv2" if detected_objects else None},
         }
         documents.append(document)

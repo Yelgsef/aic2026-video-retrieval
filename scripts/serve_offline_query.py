@@ -41,7 +41,14 @@ def main() -> None:
             self.wfile.write(data)
 
         def do_GET(self) -> None:  # noqa: N802
-            if self.path == "/health":
+            if self.path == "/":
+                data = (ROOT / "web" / "index.html").read_bytes()
+                self.send_response(200)
+                self.send_header("Content-Type", "text/html; charset=utf-8")
+                self.send_header("Content-Length", str(len(data)))
+                self.end_headers()
+                self.wfile.write(data)
+            elif self.path == "/health":
                 self.send_json(200, engine.health())
             else:
                 self.send_json(404, {"error": "not_found"})
@@ -119,7 +126,8 @@ def main() -> None:
                         temporal_aligner[0] = TemporalAligner(ROOT)
                     alignment = temporal_aligner[0].align(
                         video_id, list(task.events), event_windows,
-                        decoder="windowed", short_clip=True, clip_seconds=2.0)
+                        decoder="windowed", short_clip=True, clip_seconds=2.0,
+                        motion_rerank=bool(request.get("motion_rerank", False)))
                     self.send_json(200, {"task_plan": task.to_dict(), "alignment": alignment,
                                          "video_candidates": video_scores})
                 except (ValueError, KeyError, TypeError, json.JSONDecodeError) as exc:

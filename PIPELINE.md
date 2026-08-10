@@ -127,6 +127,22 @@ timestamp/date và watermark kênh lặp xuyên video. `ocr_text_raw` cùng lý 
 Không loại chỉ vì một chuỗi xuất hiện nhiều lần, vì logo/tên chương trình như
 `60 giây` vẫn có thể là nội dung query hợp lệ.
 
+Nhánh OCR độ phân giải gốc đã được bổ sung sau final-keyframe selection:
+
+```text
+Final keyframe gốc -> PP-OCRv6 tiếng Việt -> polygon + confidence
+  -> loại timestamp/watermark
+  -> confidence thấp: crop JPEG -> Gemini Batch minimal thinking
+  -> merge local/Gemini -> scene document
+```
+
+Mỗi video giới hạn mặc định tối đa 80 crop Gemini, chọn theo confidence thấp
+nhất. Vì vậy chi phí không tăng tuyến tính theo toàn bộ số frame.
+
+ASR giữ `asr_text_raw`; chỉ segment có log-probability thấp, nhiều word
+confidence thấp hoặc có chữ số mới được đưa vào Gemini Batch normalization.
+Kết quả chuẩn hóa có proper nouns, changes, uncertainties và provenance riêng.
+
 ## 5. Multi-Modal Semantic Fusion Engine
 
 Schema, parser và scene-document builder đã được build. Hiện nó chạy được khi
@@ -176,6 +192,7 @@ Stage A - Query Understanding
   - tách people / objects / actions / locations / events
   - query expansion Việt-Anh
   - tạo các query variants
+  - tách riêng visual_query / ocr_query / asr_query
   |
   v
 Stage B - Parallel Candidate Generation
@@ -264,6 +281,8 @@ Cấu hình production được chọn theo task thay vì bật mọi nhánh cù
 | Independent visual ensemble | OpenCLIP ViT-L/14 LAION-2B | Đã build, tự bật cho KIS |
 | ASR | Whisper large-v3 | Đã build |
 | OCR/caption/entities | Gemini Batch | Generator đã build, chưa chạy toàn dataset |
+| Full-resolution OCR | PP-OCRv6 + conditional Gemini crops | Đã build và smoke test |
+| ASR normalization | Conditional Gemini Batch | Đã build generator/parser |
 | Text semantic embedding | BGE-M3 | Đã build và smoke test trên L21_V001 |
 | Full-text retrieval | SQLite FTS5/BM25 | ASR baseline đã build |
 | Fuzzy OCR/entity retrieval | Character n-gram + RapidFuzz | Đã build |
@@ -272,6 +291,7 @@ Cấu hình production được chọn theo task thay vì bật mọi nhánh cù
 | Q&A visual answering | Hybrid top-24 + Gemini contact sheet | Đã build; cần validation đa video |
 | TRAKE temporal alignment | Field-aware coarse retrieval + stride-5 short-clip + DP | Đã build, validation subset 10 |
 | Optional local visual-language reranking | VLM top-N | Chưa build |
+| Motion-aware temporal candidate rerank | Gated embedding-change prior | Đã build dạng ablation, chưa bật mặc định |
 
 ## 8.1. Persistent query service
 

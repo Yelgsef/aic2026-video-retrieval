@@ -14,6 +14,7 @@ from transformers import AutoModel, AutoProcessor
 
 from .query_understanding import build_query_plan
 from .retrieval_fusion import robust_unit
+from .temporal_reranker import motion_aware_scores
 
 
 class TemporalAligner:
@@ -44,7 +45,7 @@ class TemporalAligner:
     def align(self, video_id: str, events: list[str],
               event_windows: list[list[dict[str, Any]]] | None = None,
               decoder: str = "windowed", short_clip: bool = False,
-              clip_seconds: float = 2.0) -> dict[str, Any]:
+              clip_seconds: float = 2.0, motion_rerank: bool = False) -> dict[str, Any]:
         if len(events) < 2:
             raise ValueError("TRAKE requires at least two ordered events")
         feature_dir = self.root / "workspace" / "features" / "google_siglip2_base_patch16_224"
@@ -57,6 +58,9 @@ class TemporalAligner:
             pooled = self._short_clip_embeddings(embeddings, metadata.pts_time.to_numpy(), clip_seconds)
             clip_scores = np.stack([(pooled @ group.T).max(axis=1) for group in groups])
             scores = 0.55 * scores + 0.45 * clip_scores
+        motion_gates = [False] * len(events)
+        if motion_rerank:
+            scores, motion_gates = motion_aware_scores(events, embeddings, scores)
         if decoder not in {"dense", "windowed"}:
             raise ValueError("decoder must be dense or windowed")
         # Coarse-to-fine fusion: scene retrieval supplies temporal priors, while
@@ -88,6 +92,7 @@ class TemporalAligner:
                 "sequence_score": sequence_score, "sampling_stride": 5,
                 "maximum_sampling_offset_frames": 4, "decoder": decoder,
                 "short_clip_reranking": short_clip, "clip_seconds": clip_seconds if short_clip else None,
+                "motion_reranking": motion_rerank, "motion_event_gates": motion_gates,
                 "used_scene_priors": bool(event_windows)}
 
     @staticmethod

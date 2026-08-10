@@ -18,7 +18,8 @@ ROOT = Path(__file__).resolve().parents[1]
 DB_PATH = ROOT / "workspace" / "scheduler" / "jobs.sqlite3"
 STOP_REQUESTED = False
 STAGES = ("omnishot", "sampling", "siglip-base", "siglip-so400m-final", "asr-large-v3",
-          "semantic-scenes", "objects-yoloworld", "gemini-batch-prepare")
+          "semantic-scenes", "objects-yoloworld", "fullres-ocr", "asr-normalize-prepare",
+          "gemini-batch-prepare", "gemini-ocr-crop-prepare")
 DEPENDENCY = {
     "omnishot": None,
     "sampling": "omnishot",
@@ -27,13 +28,16 @@ DEPENDENCY = {
     "asr-large-v3": None,
     "semantic-scenes": ("siglip-so400m-final", "asr-large-v3"),
     "objects-yoloworld": "semantic-scenes",
+    "fullres-ocr": "siglip-so400m-final",
+    "asr-normalize-prepare": "asr-large-v3",
     "gemini-batch-prepare": "semantic-scenes",
+    "gemini-ocr-crop-prepare": "fullres-ocr",
 }
 
 
 def configuration_hash() -> str:
     payload = {
-        "pipeline_version": "0.3.0",
+        "pipeline_version": "0.4.0",
         "sampling_stride": 5,
         "visual_model": "google/siglip2-base-patch16-224",
         "visual_batch_size": 16,
@@ -45,6 +49,10 @@ def configuration_hash() -> str:
         "gemini_batch_schema_version": "0.1.0",
         "object_model": "yolov8s-worldv2",
         "object_confidence": 0.12,
+        "ocr_model": "PP-OCRv6-medium-vi",
+        "ocr_confidence": 0.35,
+        "ocr_gemini_threshold": 0.78,
+        "asr_normalization": "conditional-gemini-minimal",
     }
     return hashlib.sha256(json.dumps(payload, sort_keys=True).encode()).hexdigest()[:16]
 
@@ -137,6 +145,16 @@ def artifact_valid(video_id: str, stage: str) -> bool:
             table = pd.read_parquet(ROOT / "workspace" / "objects_yoloworld" / video_id / "detections.parquet")
             report = json.loads((ROOT / "workspace" / "objects_yoloworld" / video_id / "report.json").read_text(encoding="utf-8"))
             return report.get("decoded_frames", 0) == report.get("final_frames", -1) and "frame_id" in table.columns
+        if stage == "fullres-ocr":
+            table = pd.read_parquet(ROOT / "workspace" / "ocr_fullres" / video_id / "regions.parquet")
+            report = json.loads((ROOT / "workspace" / "ocr_fullres" / video_id / "report.json").read_text(encoding="utf-8"))
+            return (len(table) == report.get("regions", -1) and report.get("frames", 0) > 0
+                    and report.get("complete") is True)
+        if stage == "asr-normalize-prepare":
+            path = ROOT / "workspace" / "asr_normalization" / video_id / "requests.jsonl"
+            return path.exists() and (ROOT / "workspace" / "asr_normalization" / video_id / "report.json").exists()
+        if stage == "gemini-ocr-crop-prepare":
+            return (ROOT / "workspace" / "ocr_fullres" / video_id / "gemini_requests.jsonl").exists()
     except (OSError, ValueError, KeyError, json.JSONDecodeError):
         return False
     return False
@@ -182,7 +200,7 @@ def claim(connection: sqlite3.Connection, shard: int, worker_id: str, stages: tu
             video_filter = f" AND video_id IN ({','.join('?' for _ in video_ids)})"
             parameters = [config, *stages, *video_ids]
         rows = connection.execute(
-            f"SELECT * FROM jobs WHERE config_hash=?{shard_filter} AND status IN ('pending','retry') AND stage IN ({placeholders}){video_filter} ORDER BY video_id, CASE stage WHEN 'omnishot' THEN 1 WHEN 'sampling' THEN 2 WHEN 'siglip-base' THEN 3 WHEN 'siglip-so400m-final' THEN 4 WHEN 'asr-large-v3' THEN 5 WHEN 'semantic-scenes' THEN 6 WHEN 'objects-yoloworld' THEN 7 WHEN 'gemini-batch-prepare' THEN 8 ELSE 9 END",
+            f"SELECT * FROM jobs WHERE config_hash=?{shard_filter} AND status IN ('pending','retry') AND stage IN ({placeholders}){video_filter} ORDER BY video_id, CASE stage WHEN 'omnishot' THEN 1 WHEN 'sampling' THEN 2 WHEN 'siglip-base' THEN 3 WHEN 'siglip-so400m-final' THEN 4 WHEN 'asr-large-v3' THEN 5 WHEN 'semantic-scenes' THEN 6 WHEN 'objects-yoloworld' THEN 7 WHEN 'fullres-ocr' THEN 8 WHEN 'asr-normalize-prepare' THEN 9 WHEN 'gemini-batch-prepare' THEN 10 WHEN 'gemini-ocr-crop-prepare' THEN 11 ELSE 12 END",
             parameters,
         ).fetchall()
         selected = None
@@ -227,6 +245,9 @@ def command_for(video_id: str, stage: str) -> list[str]:
         "semantic-scenes": ["uv", "run", "--project", "environments/siglip2", "python", "scripts/build_semantic_scenes.py", "--video-id", video_id, "--force"],
         "objects-yoloworld": ["uv", "run", "--project", "environments/objects", "python", "scripts/extract_yoloworld_objects.py", "--video-id", video_id, "--batch-size", "8", "--force"],
         "gemini-batch-prepare": ["uv", "run", "--project", "environments/siglip2", "python", "scripts/gemini_batch_scenes.py", "prepare", "--video-id", video_id],
+        "fullres-ocr": ["uv", "run", "--project", "environments/ocr", "python", "scripts/extract_fullres_ocr.py", "--video-id", video_id],
+        "asr-normalize-prepare": ["uv", "run", "--project", "environments/gemini", "python", "scripts/prepare_gemini_asr_normalization.py", "--video-id", video_id],
+        "gemini-ocr-crop-prepare": ["uv", "run", "--project", "environments/gemini", "python", "scripts/prepare_gemini_ocr_crop_batch.py", "--video-id", video_id],
     }
     return commands[stage]
 

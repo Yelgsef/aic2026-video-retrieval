@@ -191,11 +191,12 @@ class OfflineSearchEngine:
                     semantic = np.maximum(semantic, 0.92 * semantic_fields.get("ocr_entities", semantic))
             if fusion_mode not in {"rrf", "normalized"}:
                 raise ValueError("fusion_mode must be rrf or normalized")
+            lexical_query = plan.ocr_query if plan.intent == "ocr" and plan.ocr_query else plan.normalized
             orders = {
                 "visual": np.argsort(-visual)[:candidate_k].tolist(),
                 "semantic": np.argsort(-semantic)[:candidate_k].tolist(),
-                "lexical": self._fts(plan.normalized, "scene_fts", candidate_k),
-                "fuzzy": self._fts(plan.normalized, "fuzzy_fts", candidate_k),
+                "lexical": self._fts(lexical_query, "scene_fts", candidate_k),
+                "fuzzy": self._fts(lexical_query, "fuzzy_fts", candidate_k),
             }
             if openclip_scores is not None:
                 orders["openclip"] = np.argsort(-openclip_scores)[:candidate_k].tolist()
@@ -203,7 +204,7 @@ class OfflineSearchEngine:
             for branch, order in orders.items():
                 for rank, row in enumerate(order, 1):
                     fused[row] = fused.get(row, 0.0) + weights[branch] / (60 + rank)
-            rapid = {row: fuzz.WRatio(plan.normalized, str(self.scenes.iloc[row].retrieval_text)) for row in fused}
+            rapid = {row: fuzz.WRatio(lexical_query, str(self.scenes.iloc[row].retrieval_text)) for row in fused}
             for rank, row in enumerate(sorted(rapid, key=rapid.get, reverse=True), 1):
                 fused[row] += weights["fuzzy"] / (60 + rank)
             coverage_scores: dict[int, float] = {}
