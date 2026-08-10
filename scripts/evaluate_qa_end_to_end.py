@@ -31,6 +31,7 @@ def main() -> None:
     parser.add_argument("--limit", type=int, default=0)
     parser.add_argument("--query-id", action="append", default=[])
     parser.add_argument("--candidates", type=int, default=24)
+    parser.add_argument("--accepted-ranges", type=Path)
     args = parser.parse_args()
     labels = pd.read_csv(args.labels)
     labels = labels.loc[labels.query_type.eq("QA")]
@@ -40,6 +41,11 @@ def main() -> None:
         labels = labels.head(args.limit)
     retrieval = OfflineSearchEngine(ROOT, args.index)
     qa = GeminiQAEngine(ROOT)
+    multi_ranges = {}
+    if args.accepted_ranges:
+        multi_ranges = {item["query_id"]: item["accepted_ranges"] for item in
+                        (json.loads(line) for line in args.accepted_ranges.read_text(encoding="utf-8").splitlines()
+                         if line.strip())}
     rows = []
     args.output.parent.mkdir(parents=True, exist_ok=True)
     for label in labels.itertuples(index=False):
@@ -52,14 +58,19 @@ def main() -> None:
             actual = normalize(answer["answer"])
             score = ratio(expected, actual) / 100
             answer_match = expected in actual or actual in expected or score >= 0.8
-            frame_hit = (str(answer["video_id"]) == str(label.video_id)
-                         and int(label.start_frame) <= int(answer["frame_id"]) < int(label.end_frame_exclusive))
+            accepted = multi_ranges.get(str(label.query_id), [{"video_id": str(label.video_id),
+                                                               "start_frame": int(label.start_frame),
+                                                               "end_frame_exclusive": int(label.end_frame_exclusive)}])
+            frame_hit = any(str(answer["video_id"]) == str(item["video_id"])
+                            and int(item["start_frame"]) <= int(answer["frame_id"])
+                            < int(item["end_frame_exclusive"]) for item in accepted)
             rows.append({"query_id": label.query_id, "query": label.query_text_vi,
                          "expected_answer": label.answer, "predicted_answer": answer["answer"],
                          "expected_video_id": label.video_id, "predicted_video_id": answer["video_id"],
                          "predicted_frame_id": answer["frame_id"], "frame_hit": frame_hit,
                          "answer_match": answer_match, "answer_similarity": score,
                          "confidence": answer["confidence"], "status": "completed",
+                         "accepted_range_count": len(accepted),
                          "latency_seconds": time.perf_counter() - started})
         except Exception as exc:
             rows.append({"query_id": label.query_id, "query": label.query_text_vi,

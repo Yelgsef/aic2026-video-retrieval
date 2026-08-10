@@ -359,6 +359,11 @@ second pass trên tối đa bốn frame của scene đã chọn. Answer match t�
 và joint accuracy tăng lên 0,50; frame hit giữ 0,50. Median latency là 9,381
 giây, P90 10,908 giây và mean 14,512 giây do hai API outliers khoảng 40 giây.
 
+Multi-range QA verifier đã tạo 32 accepted scene ranges cho 12 query và audit
+100% range khớp artifact thật. Khi rescore cùng predictions, frame hit tăng từ
+0,50 lên 0,8333 và joint accuracy tăng từ 0,50 lên 0,75. Các range này vẫn là
+pseudo-label và giữ `verified=false`.
+
 ## 10. Trạng thái chạy trên dataset
 
 - Code visual pipeline đã build tới final SO400M embeddings.

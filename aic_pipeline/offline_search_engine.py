@@ -165,6 +165,8 @@ class OfflineSearchEngine:
                                 "reranker_score": reranker_scores.get(row_id), "video_id": str(row.video_id),
                                 "scene_index": int(row.scene_index), "start_time": float(row.start_time),
                                 "end_time": float(row.end_time),
+                                "start_frame": int(row.start_frame),
+                                "end_frame_exclusive": int(row.end_frame_exclusive),
                                 "best_frame_id": int(best_frames[row_id]),
                                 "top_visual_frame_ids": top_frames[row_id],
                                 "representative_frame_ids": [int(value) for value in row.representative_frame_ids],

@@ -121,3 +121,21 @@ phân giải cao. Nếu lượt hai lỗi mạng, kết quả lượt một vẫ
 Mean latency bị kéo lên bởi hai Gemini outliers khoảng 40 giây; 10/12 query còn
 lại hoàn tất quanh 9–11 giây. Accuracy vẫn được tính trên pseudo-label và cần
 kiểm tra lại với nhiều accepted ranges cho các cảnh lặp.
+
+### QA multi-range validation
+
+Gemini verifier kiểm tra top-24 scene/frame của từng QA và chỉ bổ sung scene
+thật sự hỗ trợ cùng reference answer. Ground-truth range ban đầu luôn được giữ.
+Kết quả có 32 accepted ranges cho 12 query; tất cả range đã được audit khớp
+chính xác semantic-scene artifacts, không có range trùng.
+
+Rescore cùng prediction high-resolution, không gọi lại VQA:
+
+| Metric | Single range | Multi-range |
+|---|---:|---:|
+| Frame hit rate | 0,50 | 0,8333 |
+| Answer match rate | 0,75 | 0,75 |
+| Joint accuracy | 0,50 | 0,75 |
+
+Multi-range labels vẫn là Gemini pseudo-label (`verified=false`). Chúng sửa được
+false negative do cảnh phát lại/lặp, nhưng không thay thế human verification.
