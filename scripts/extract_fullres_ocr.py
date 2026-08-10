@@ -33,7 +33,9 @@ def main() -> None:
     parser.add_argument("--gemini-threshold", type=float, default=0.78)
     parser.add_argument("--max-gemini-crops", type=int, default=80)
     parser.add_argument("--limit-frames", type=int, default=0)
-    parser.add_argument("--batch-size", type=int, default=8)
+    parser.add_argument("--batch-size", type=int, default=16)
+    parser.add_argument("--det-model", default="PP-OCRv6_small_det")
+    parser.add_argument("--rec-model", default="PP-OCRv6_small_rec")
     parser.add_argument("--force", action="store_true")
     args = parser.parse_args()
 
@@ -58,7 +60,9 @@ def main() -> None:
         frames = frames.head(args.limit_frames)
 
     from paddleocr import PaddleOCR
-    engine = PaddleOCR(lang="vi", use_doc_orientation_classify=False, use_doc_unwarping=False,
+    engine = PaddleOCR(text_detection_model_name=args.det_model,
+                       text_recognition_model_name=args.rec_model,
+                       use_doc_orientation_classify=False, use_doc_unwarping=False,
                        use_textline_orientation=False, text_rec_score_thresh=args.confidence)
     output.mkdir(parents=True, exist_ok=True)
     crop_dir = output / "gemini_crops"
@@ -117,7 +121,8 @@ def main() -> None:
     pd.DataFrame(rows).to_parquet(result_path, index=False)
     (output / "gemini_candidates.jsonl").write_text(
         "".join(json.dumps(x, ensure_ascii=False) + "\n" for x in selected), encoding="utf-8")
-    report = {"video_id": args.video_id, "frames": len(frames), "source_frames": source_frame_count,
+    report = {"video_id": args.video_id, "det_model": args.det_model, "rec_model": args.rec_model,
+              "frames": len(frames), "source_frames": source_frame_count,
               "complete": len(frames) == source_frame_count, "regions": len(rows),
               "searchable_regions": sum(x["searchable"] for x in rows),
               "filtered_regions": sum(not x["searchable"] for x in rows),

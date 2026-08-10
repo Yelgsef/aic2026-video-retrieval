@@ -4,7 +4,7 @@ Ngày: 2026-08-11
 
 ## Đã build
 
-- PP-OCRv6 medium trên final keyframe độ phân giải gốc, Paddle CUDA 12.6.
+- PP-OCRv6 Small trên final keyframe độ phân giải gốc, Paddle CUDA 12.6.
 - Lưu polygon, confidence, OCR raw/searchable và crop cần Gemini.
 - Gemini Batch fallback giới hạn tối đa 80 crop/video.
 - Gemini Batch normalization có điều kiện cho Whisper large-v3.
@@ -34,7 +34,7 @@ uv run --project environments/siglip2 python scripts/run_dataset_scheduler.py --
 Scheduler dùng SQLite WAL, artifact validation, stale-lease recovery và tối đa
 ba lần thử. Tắt máy không làm mất trạng thái; chạy lại cùng lệnh để tiếp tục.
 
-OCR decode video tuần tự và inference batch 8; không random-seek từng frame.
+OCR decode video tuần tự và inference batch 16; không random-seek từng frame.
 Môi trường `environments/ocr` tách biệt PyTorch và tự nạp cuDNN/cuBLAS DLL trên
 Windows.
 

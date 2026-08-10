@@ -49,9 +49,10 @@ def configuration_hash() -> str:
         "gemini_batch_schema_version": "0.1.0",
         "object_model": "yolov8s-worldv2",
         "object_confidence": 0.12,
-        "ocr_model": "PP-OCRv6-medium-vi",
+        "ocr_model": "PP-OCRv6-small-vi",
         "ocr_confidence": 0.35,
         "ocr_gemini_threshold": 0.78,
+        "ocr_batch_size": 16,
         "asr_normalization": "conditional-gemini-minimal",
     }
     return hashlib.sha256(json.dumps(payload, sort_keys=True).encode()).hexdigest()[:16]
@@ -149,7 +150,9 @@ def artifact_valid(video_id: str, stage: str) -> bool:
             table = pd.read_parquet(ROOT / "workspace" / "ocr_fullres" / video_id / "regions.parquet")
             report = json.loads((ROOT / "workspace" / "ocr_fullres" / video_id / "report.json").read_text(encoding="utf-8"))
             return (len(table) == report.get("regions", -1) and report.get("frames", 0) > 0
-                    and report.get("complete") is True)
+                    and report.get("complete") is True
+                    and report.get("det_model") == "PP-OCRv6_small_det"
+                    and report.get("rec_model") == "PP-OCRv6_small_rec")
         if stage == "asr-normalize-prepare":
             path = ROOT / "workspace" / "asr_normalization" / video_id / "requests.jsonl"
             return path.exists() and (ROOT / "workspace" / "asr_normalization" / video_id / "report.json").exists()
