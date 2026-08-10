@@ -347,6 +347,13 @@ event temporal hit = 0,4667; đúng toàn chuỗi = 0,10; latency = 4,396 giây.
 Vì vậy QA evidence selection và TRAKE frame alignment vẫn là hai nhánh cần tối
 ưu; chưa được xem là production-quality.
 
+Sau tối ưu coarse-to-fine, TRAKE event hit tăng từ 0,4667 lên 0,8667 và đúng
+toàn chuỗi tăng từ 0,10 lên 0,60, trong khi vẫn giữ chọn video/thứ tự ở 1,00.
+QA grounding-query + hai temporal views tăng frame hit từ 0,4167 lên 0,50,
+nhưng joint accuracy vẫn là 0,3333. Do đó TRAKE baseline đã được cải thiện đáng
+kể; QA vẫn cần validation có nhiều accepted scene/frame ranges và reranking tốt
+hơn cho các cảnh lặp lại.
+
 ## 10. Trạng thái chạy trên dataset
 
 - Code visual pipeline đã build tới final SO400M embeddings.

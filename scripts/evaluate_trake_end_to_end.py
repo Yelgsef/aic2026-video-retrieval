@@ -14,10 +14,11 @@ from aic_pipeline.offline_search_engine import OfflineSearchEngine
 from aic_pipeline.temporal_alignment import TemporalAligner
 
 
-def choose_video(engine: OfflineSearchEngine, events: list[str]) -> tuple[str, dict]:
-    per_event, videos = [], set()
+def choose_video(engine: OfflineSearchEngine, events: list[str]) -> tuple[str, dict, list[list[dict]]]:
+    per_event, event_results, videos = [], [], set()
     for event in events:
         result = engine.search(event, top_k=100, rerank_k=30)
+        event_results.append(result["results"])
         scores = {}
         for row in result["results"]:
             video_id = row["video_id"]
@@ -30,7 +31,9 @@ def choose_video(engine: OfflineSearchEngine, events: list[str]) -> tuple[str, d
         summary[video_id] = {"coverage": len(available) / len(per_event),
                              "mean_event_score": sum(available) / len(available)}
     selected = max(summary, key=lambda v: (summary[v]["coverage"], summary[v]["mean_event_score"]))
-    return selected, summary
+    windows = [[row for row in results if row["video_id"] == selected][:5]
+               for results in event_results]
+    return selected, summary, windows
 
 
 def main() -> None:
@@ -46,8 +49,8 @@ def main() -> None:
     for label in labels:
         started = time.perf_counter()
         events = [x["description_vi"] for x in label["events"]]
-        selected_video, candidates = choose_video(engine, events)
-        alignment = aligner.align(selected_video, events)
+        selected_video, candidates, windows = choose_video(engine, events)
+        alignment = aligner.align(selected_video, events, windows)
         predicted = alignment["events"]
         hits = [selected_video == label["video_id"] and truth["start_frame"] <= pred["frame_id"] < truth["end_frame_exclusive"]
                 for truth, pred in zip(label["events"], predicted)]

@@ -15,7 +15,7 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 
 from aic_pipeline.offline_search_engine import OfflineSearchEngine
-from aic_pipeline.qa_gemini import GeminiQAEngine
+from aic_pipeline.qa_gemini import GeminiQAEngine, qa_grounding_query
 
 
 def normalize(text: str) -> str:
@@ -42,7 +42,8 @@ def main() -> None:
     for label in labels.itertuples(index=False):
         started = time.perf_counter()
         try:
-            found = retrieval.search(str(label.query_text_vi), top_k=max(30, args.candidates), rerank_k=30)
+            found = retrieval.search(qa_grounding_query(str(label.query_text_vi)),
+                                     top_k=max(30, args.candidates), rerank_k=30)
             answer = qa.answer(str(label.query_text_vi), found["results"], args.candidates)
             expected = normalize(label.answer)
             actual = normalize(answer["answer"])

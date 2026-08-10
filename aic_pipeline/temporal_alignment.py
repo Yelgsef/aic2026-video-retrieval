@@ -40,7 +40,8 @@ class TemporalAligner:
             offset += len(group)
         return output
 
-    def align(self, video_id: str, events: list[str]) -> dict[str, Any]:
+    def align(self, video_id: str, events: list[str],
+              event_windows: list[list[dict[str, Any]]] | None = None) -> dict[str, Any]:
         if len(events) < 2:
             raise ValueError("TRAKE requires at least two ordered events")
         feature_dir = self.root / "workspace" / "features" / "google_siglip2_base_patch16_224"
@@ -49,6 +50,20 @@ class TemporalAligner:
         embeddings /= np.maximum(np.linalg.norm(embeddings, axis=1, keepdims=True), 1e-12)
         groups = self._event_vectors(events)
         scores = np.stack([(embeddings @ group.T).max(axis=1) for group in groups])
+        # Coarse-to-fine fusion: scene retrieval supplies temporal priors, while
+        # stride-5 SigLIP still chooses the exact frame inside/around each scene.
+        if event_windows:
+            frame_ids = metadata.frame_id.to_numpy()
+            pts_times = metadata.pts_time.to_numpy()
+            for event_index, windows in enumerate(event_windows):
+                for rank, window in enumerate(windows[:5]):
+                    if "start_frame" in window:
+                        mask = ((frame_ids >= int(window["start_frame"]))
+                                & (frame_ids < int(window["end_frame_exclusive"])))
+                    else:
+                        mask = ((pts_times >= float(window["start_time"]))
+                                & (pts_times < float(window["end_time"])))
+                    scores[event_index, mask] += 0.10 / (rank + 1)
         count, frames = scores.shape
         dp = np.full((count, frames), -np.inf, dtype=np.float32)
         parent = np.full((count, frames), -1, dtype=np.int64)
@@ -75,4 +90,5 @@ class TemporalAligner:
                             "visual_score": float(scores[index, position])})
         return {"task": "TRAKE", "video_id": video_id, "events": aligned,
                 "sequence_score": float(dp[-1, final] / count), "sampling_stride": 5,
-                "maximum_sampling_offset_frames": 4}
+                "maximum_sampling_offset_frames": 4,
+                "used_scene_priors": bool(event_windows)}

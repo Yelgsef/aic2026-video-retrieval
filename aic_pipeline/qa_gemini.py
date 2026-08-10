@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import os
+import re
 import time
 from pathlib import Path
 from typing import Any
@@ -19,6 +20,21 @@ class QASelection(BaseModel):
     answer: str = Field(description="Short answer in Vietnamese or English")
     evidence_vi: str
     confidence: float = Field(ge=0, le=1)
+
+
+def qa_grounding_query(question: str) -> str:
+    """Remove answer-slot wording while preserving the visual scene description."""
+    text = question.strip().rstrip("?.! ")
+    replacements = (
+        (r"\bmàu gì\b", ""), (r"\bvật gì\b", "đồ vật"),
+        (r"\bloài động vật nào\b", "động vật"), (r"\bcon vật nào\b", "động vật"),
+        (r"\bhiện tượng gì\b", "hiện tượng"), (r"\bhành động gì\b", "hành động"),
+        (r"\btheo hướng nào\b", ""), (r"\blà gì\b", ""),
+        (r"\bghi chữ và số gì\b", "biển số xe"),
+    )
+    for pattern, replacement in replacements:
+        text = re.sub(pattern, replacement, text, flags=re.IGNORECASE)
+    return " ".join(text.split())
 
 
 class GeminiQAEngine:
@@ -64,7 +80,25 @@ class GeminiQAEngine:
         return sheet, mapping
 
     def answer(self, question: str, retrieval_results: list[dict[str, Any]], maximum_candidates: int = 24) -> dict[str, Any]:
-        candidates = retrieval_results[:maximum_candidates]
+        candidates = []
+        # Cover more scenes while showing two temporal views per scene. A single
+        # pooled best frame often misses the small object asked about in QA.
+        for scene_rank, result in enumerate(retrieval_results[: max(1, maximum_candidates // 2)], start=1):
+            frame_ids = [int(result["best_frame_id"])]
+            representatives = [int(value) for value in result.get("representative_frame_ids", [])]
+            if representatives:
+                alternate = representatives[len(representatives) // 2]
+                if alternate not in frame_ids:
+                    frame_ids.append(alternate)
+            for frame_id in frame_ids:
+                candidate = dict(result)
+                candidate["best_frame_id"] = frame_id
+                candidate["retrieval_scene_rank"] = scene_rank
+                candidates.append(candidate)
+                if len(candidates) >= maximum_candidates:
+                    break
+            if len(candidates) >= maximum_candidates:
+                break
         if not candidates:
             raise ValueError("No retrieval candidates")
         sheet, mapping = self._sheet(candidates)

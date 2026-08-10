@@ -13,7 +13,7 @@ sys.path.insert(0, str(ROOT))
 
 from aic_pipeline.offline_search_engine import OfflineSearchEngine
 from aic_pipeline.task_router import route_query
-from aic_pipeline.qa_gemini import GeminiQAEngine
+from aic_pipeline.qa_gemini import GeminiQAEngine, qa_grounding_query
 from aic_pipeline.temporal_alignment import TemporalAligner
 
 
@@ -65,7 +65,7 @@ def main() -> None:
                         raise ValueError("/answer accepts only QA queries")
                     vqa_candidates = int(request.get("vqa_candidates", 24))
                     candidate_k = max(int(request.get("candidate_k", 30)), vqa_candidates)
-                    retrieval = engine.search(question, top_k=candidate_k,
+                    retrieval = engine.search(qa_grounding_query(question), top_k=candidate_k,
                                               rerank_k=int(request.get("rerank_k", 30)))
                     if qa_engine[0] is None:
                         qa_engine[0] = GeminiQAEngine(ROOT)
@@ -111,9 +111,12 @@ def main() -> None:
                     video_id = max(video_scores,
                                    key=lambda video: (video_scores[video]["coverage"],
                                                       video_scores[video]["mean_event_score"]))
+                    event_windows = [[result for result in retrieval["results"]
+                                      if result["video_id"] == video_id][:5]
+                                     for retrieval in event_retrievals]
                     if temporal_aligner[0] is None:
                         temporal_aligner[0] = TemporalAligner(ROOT)
-                    alignment = temporal_aligner[0].align(video_id, list(task.events))
+                    alignment = temporal_aligner[0].align(video_id, list(task.events), event_windows)
                     self.send_json(200, {"task_plan": task.to_dict(), "alignment": alignment,
                                          "video_candidates": video_scores})
                 except (ValueError, KeyError, TypeError, json.JSONDecodeError) as exc:

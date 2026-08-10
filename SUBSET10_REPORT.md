@@ -74,3 +74,30 @@ evidence frame/candidate ranking; chỉ cải thiện prompt VQA sẽ không đ�
 Nhánh chọn video và ràng buộc thứ tự hoạt động tốt, nhưng SigLIP Base
 frame-level alignment chưa đủ chính xác. TRAKE cần coarse-to-fine alignment và
 scene-aware temporal constraints trước khi dùng trong thi đấu.
+
+## Kết quả sau tối ưu
+
+TRAKE được đổi sang coarse-to-fine: hybrid scene retrieval tạo tối đa năm
+temporal priors cho từng sự kiện, sau đó SigLIP2 stride-5 và dynamic programming
+chọn frame chính xác:
+
+| TRAKE metric | Trước | Sau |
+|---|---:|---:|
+| Video selection accuracy | 1,00 | 1,00 |
+| Strictly increasing sequence | 1,00 | 1,00 |
+| Per-event temporal hit rate | 0,4667 | 0,8667 |
+| All-events sequence accuracy | 0,10 | 0,60 |
+| Mean latency | 4,396 giây | 4,915 giây |
+
+QA được thêm grounding-query normalization và hai temporal views cho mỗi scene:
+
+| QA metric | Trước | Sau |
+|---|---:|---:|
+| Frame hit rate | 0,4167 | 0,50 |
+| Answer match rate | 0,5833 | 0,5833 |
+| Joint accuracy | 0,3333 | 0,3333 |
+| Mean latency | 8,534 giây | 7,989 giây |
+
+QA chỉ cải thiện evidence coverage. Một số pseudo-query mô tả cảnh lặp lại nên
+Gemini trả đúng nội dung từ một scene tương đương nhưng vẫn bị frame-range label
+tính là sai. Cần strong labels có nhiều accepted ranges để đánh giá công bằng.
