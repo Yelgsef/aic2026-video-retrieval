@@ -118,6 +118,9 @@ def prompt(scene: dict[str, Any]) -> str:
     return f"""Phân tích scene video AIC từ các frame đại diện F1..Fn theo thời gian.
 Chỉ ghi nhận chi tiết nhìn thấy rõ hoặc được transcript hỗ trợ; không đoán danh tính.
 OCR phải chép nguyên văn và gắn frame_label. Mô tả/từ khóa bằng tiếng Việt, giữ nguyên tên riêng.
+Không đưa vào ocr_lines: đồng hồ/timestamp, ngày giờ phát sóng, watermark/logo kênh,
+website/hotline cố định, ticker chạy hoặc footer lặp lại. Vẫn giữ lower-third nếu nó
+chứa tên người, chức vụ, địa danh, tiêu đề hoặc thông tin riêng của scene.
 Khoảng thời gian: {scene['start_time']:.2f}s–{scene['end_time']:.2f}s.
 Transcript ASR (có thể sai): {transcript}
 Trả về đúng JSON theo schema."""

@@ -119,6 +119,14 @@ Semantic scene
 Gemini Batch là bước enrichment qua API, không chạy trên GPU offline. Pipeline
 offline vẫn có thể tạo index từ SigLIP2 và Whisper khi chưa có kết quả Gemini.
 
+OCR dùng hai lớp chống nhiễu. Prompt yêu cầu Gemini bỏ timestamp, watermark
+kênh, ticker/footer và website/hotline cố định nhưng vẫn giữ lower-third có tên
+người, chức vụ, địa danh hoặc tiêu đề. Sau Batch, bộ lọc xác định tiếp tục loại
+timestamp/date và watermark kênh lặp xuyên video. `ocr_text_raw` cùng lý do loại
+được giữ để audit; chỉ `ocr_text` đã lọc đi vào BGE-M3, FTS5 và fuzzy index.
+Không loại chỉ vì một chuỗi xuất hiện nhiều lần, vì logo/tên chương trình như
+`60 giây` vẫn có thể là nội dung query hợp lệ.
+
 ## 5. Multi-Modal Semantic Fusion Engine
 
 Schema, parser và scene-document builder đã được build. Hiện nó chạy được khi

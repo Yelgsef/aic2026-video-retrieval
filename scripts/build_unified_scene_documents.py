@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import argparse
 import json
+import sys
+from collections import Counter
 from pathlib import Path
 from typing import Any
 
@@ -9,6 +11,9 @@ import pandas as pd
 
 
 ROOT = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(ROOT))
+
+from aic_pipeline.ocr_filter import filter_ocr_lines, recurrence_counts
 
 
 def unique(values: list[Any]) -> list[str]:
@@ -29,8 +34,10 @@ def load_gemini(path: Path) -> dict[str, dict[str, Any]]:
     return {str(row["scene_id"]): row for row in records}
 
 
-def retrieval_text(scene: Any, description: dict[str, Any], detected_objects: list[str] | None = None) -> str:
-    ocr = unique([item.get("text", "") for item in description.get("ocr_lines", [])])
+def retrieval_text(scene: Any, description: dict[str, Any], detected_objects: list[str] | None = None,
+                   searchable_ocr: list[str] | None = None) -> str:
+    ocr = searchable_ocr if searchable_ocr is not None else unique(
+        [item.get("text", "") for item in description.get("ocr_lines", [])])
     sections = [
         ("Nội dung hình ảnh", [description.get("summary_vi", "")]),
         ("Chữ trong hình", ocr),
@@ -54,6 +61,9 @@ def main() -> None:
     scenes = pd.read_parquet(ROOT / "workspace" / "semantic_scenes" / args.video_id / "scenes.parquet")
     gemini_path = args.gemini or ROOT / "workspace" / "gemini_parsed" / args.video_id / "scenes.jsonl"
     gemini = load_gemini(gemini_path)
+    descriptions = [record.get("description", {}) for record in gemini.values()]
+    ocr_recurrence = recurrence_counts(descriptions)
+    scene_count = len(scenes)
     detections_path = ROOT / "workspace" / "objects_yoloworld" / args.video_id / "detections.parquet"
     detected_by_scene: dict[int, list[str]] = {}
     if detections_path.exists():
@@ -70,15 +80,18 @@ def main() -> None:
         description = record.get("description", {})
         detected_objects = detected_by_scene.get(int(scene.scene_index), [])
         ocr_lines = description.get("ocr_lines", [])
+        ocr_text_raw = unique([item.get("text", "") for item in ocr_lines])
+        ocr_text, ocr_filtered = filter_ocr_lines(
+            ocr_lines, recurrence=ocr_recurrence, scene_count=scene_count)
         document = {
-            "schema_version": "0.2.0", "document_id": str(scene.scene_id), "video_id": args.video_id,
+            "schema_version": "0.3.0", "document_id": str(scene.scene_id), "video_id": args.video_id,
             "scene_index": int(scene.scene_index), "start_frame": int(scene.start_frame),
             "end_frame_exclusive": int(scene.end_frame_exclusive), "start_time": float(scene.start_time),
             "end_time": float(scene.end_time), "shot_ids": [int(v) for v in scene.shot_ids],
             "representative_frame_ids": [int(v) for v in scene.representative_frame_ids],
             "asr_text": str(scene.asr_exact or ""), "asr_context": str(scene.asr_context or ""),
             "visual_summary": str(description.get("summary_vi", "")), "ocr_lines": ocr_lines,
-            "ocr_text": unique([item.get("text", "") for item in ocr_lines]),
+            "ocr_text_raw": ocr_text_raw, "ocr_text": ocr_text, "ocr_filtered": ocr_filtered,
             "people": unique(description.get("people", [])),
             "objects": unique(list(description.get("objects", [])) + detected_objects),
             "detected_objects": detected_objects,
@@ -87,7 +100,7 @@ def main() -> None:
             "search_keywords": unique(description.get("search_keywords_vi", [])),
             "uncertainties": unique(description.get("uncertainties", [])),
             "has_gemini": bool(record), "has_object_detection": bool(detected_objects),
-            "retrieval_text": retrieval_text(scene, description, detected_objects),
+            "retrieval_text": retrieval_text(scene, description, detected_objects, ocr_text),
             "provenance": {"semantic_scenes": f"workspace/semantic_scenes/{args.video_id}/scenes.parquet",
                            "gemini": record.get("provenance"), "asr_model": "faster-whisper-large-v3",
                            "visual_model": "google/siglip2-so400m-patch14-384",
@@ -97,12 +110,19 @@ def main() -> None:
     output.mkdir(parents=True, exist_ok=True)
     jsonl = output / "scenes.jsonl"
     jsonl.write_text("".join(json.dumps(doc, ensure_ascii=False) + "\n" for doc in documents), encoding="utf-8")
-    flat = [{k: v for k, v in doc.items() if k not in {"ocr_lines", "provenance"}} for doc in documents]
+    flat = [{k: v for k, v in doc.items() if k not in {"ocr_lines", "ocr_filtered", "provenance"}}
+            for doc in documents]
     pd.DataFrame(flat).to_parquet(output / "scenes.parquet", index=False)
-    report = {"schema_version": "0.2.0", "video_id": args.video_id, "documents": len(documents),
+    report = {"schema_version": "0.3.0", "video_id": args.video_id, "documents": len(documents),
               "with_gemini": sum(doc["has_gemini"] for doc in documents),
               "with_object_detection": sum(doc["has_object_detection"] for doc in documents),
-              "with_asr": sum(bool(doc["asr_text"]) for doc in documents), "output": str(output)}
+              "with_asr": sum(bool(doc["asr_text"]) for doc in documents),
+              "ocr_raw_lines": sum(len(doc["ocr_text_raw"]) for doc in documents),
+              "ocr_searchable_lines": sum(len(doc["ocr_text"]) for doc in documents),
+              "ocr_filtered_lines": sum(len(doc["ocr_filtered"]) for doc in documents),
+              "ocr_filter_reasons": dict(Counter(
+                  row["reason"] for doc in documents for row in doc["ocr_filtered"])),
+              "output": str(output)}
     (output / "report.json").write_text(json.dumps(report, ensure_ascii=False, indent=2), encoding="utf-8")
     print(json.dumps(report, ensure_ascii=False, indent=2))
 
