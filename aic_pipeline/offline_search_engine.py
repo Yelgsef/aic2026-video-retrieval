@@ -80,7 +80,7 @@ class OfflineSearchEngine:
                 (expression, limit))]
 
     def _siglip_scores(self, variants: list[str]) -> tuple[np.ndarray, np.ndarray]:
-        inputs = self.siglip_processor(text=variants, padding="max_length", max_length=64,
+        inputs = self.siglip_processor(text=variants, padding="max_length", truncation=True, max_length=64,
                                        return_tensors="pt").to(self.device)
         with torch.inference_mode():
             vectors = self.siglip.get_text_features(**inputs).float()

@@ -28,7 +28,8 @@ class TemporalAligner:
     def _event_vectors(self, events: list[str]) -> list[np.ndarray]:
         variant_groups = [list(build_query_plan(event).variants) for event in events]
         flat = [variant for group in variant_groups for variant in group]
-        inputs = self.processor(text=flat, padding="max_length", max_length=64, return_tensors="pt").to(self.device)
+        inputs = self.processor(text=flat, padding="max_length", truncation=True,
+                                max_length=64, return_tensors="pt").to(self.device)
         with torch.inference_mode():
             vectors = self.model.get_text_features(**inputs).float()
             vectors = torch.nn.functional.normalize(vectors, dim=-1).cpu().numpy()

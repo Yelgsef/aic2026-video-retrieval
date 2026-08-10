@@ -1,0 +1,74 @@
+from __future__ import annotations
+
+import argparse
+import json
+import sys
+import time
+from pathlib import Path
+
+
+ROOT = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(ROOT))
+
+from aic_pipeline.offline_search_engine import OfflineSearchEngine
+from aic_pipeline.temporal_alignment import TemporalAligner
+
+
+def choose_video(engine: OfflineSearchEngine, events: list[str]) -> tuple[str, dict]:
+    per_event, videos = [], set()
+    for event in events:
+        result = engine.search(event, top_k=100, rerank_k=30)
+        scores = {}
+        for row in result["results"]:
+            video_id = row["video_id"]
+            scores[video_id] = max(scores.get(video_id, float("-inf")), float(row["fusion_score"]))
+        per_event.append(scores)
+        videos.update(scores)
+    summary = {}
+    for video_id in videos:
+        available = [scores[video_id] for scores in per_event if video_id in scores]
+        summary[video_id] = {"coverage": len(available) / len(per_event),
+                             "mean_event_score": sum(available) / len(available)}
+    selected = max(summary, key=lambda v: (summary[v]["coverage"], summary[v]["mean_event_score"]))
+    return selected, summary
+
+
+def main() -> None:
+    parser = argparse.ArgumentParser(description="Evaluate video selection and temporal alignment for TRAKE.")
+    parser.add_argument("--labels", type=Path, default=ROOT / "workspace/validation/trake_pseudolabels_subset10.jsonl")
+    parser.add_argument("--index", type=Path, default=ROOT / "workspace/offline_index_subset10")
+    parser.add_argument("--output", type=Path, default=ROOT / "workspace/validation/trake_end_to_end_subset10.json")
+    args = parser.parse_args()
+    labels = [json.loads(x) for x in args.labels.read_text(encoding="utf-8").splitlines() if x.strip()]
+    engine = OfflineSearchEngine(ROOT, args.index)
+    aligner = TemporalAligner(ROOT)
+    rows = []
+    for label in labels:
+        started = time.perf_counter()
+        events = [x["description_vi"] for x in label["events"]]
+        selected_video, candidates = choose_video(engine, events)
+        alignment = aligner.align(selected_video, events)
+        predicted = alignment["events"]
+        hits = [selected_video == label["video_id"] and truth["start_frame"] <= pred["frame_id"] < truth["end_frame_exclusive"]
+                for truth, pred in zip(label["events"], predicted)]
+        increasing = all(a["frame_id"] < b["frame_id"] for a, b in zip(predicted, predicted[1:]))
+        row = {"query_id": label["query_id"], "expected_video_id": label["video_id"],
+               "predicted_video_id": selected_video, "video_hit": selected_video == label["video_id"],
+               "event_hits": hits, "all_events_hit": all(hits), "strictly_increasing": increasing,
+               "predicted_frame_ids": [x["frame_id"] for x in predicted],
+               "latency_seconds": time.perf_counter() - started, "video_candidates": candidates}
+        rows.append(row)
+        print(json.dumps(row, ensure_ascii=False), flush=True)
+    event_count = sum(len(r["event_hits"]) for r in rows)
+    report = {"pseudo_labels": True, "count": len(rows),
+              "video_accuracy": sum(r["video_hit"] for r in rows) / len(rows),
+              "event_hit_rate": sum(sum(r["event_hits"]) for r in rows) / event_count,
+              "sequence_accuracy": sum(r["all_events_hit"] for r in rows) / len(rows),
+              "increasing_rate": sum(r["strictly_increasing"] for r in rows) / len(rows),
+              "mean_latency_seconds": sum(r["latency_seconds"] for r in rows) / len(rows), "rows": rows}
+    args.output.write_text(json.dumps(report, ensure_ascii=False, indent=2), encoding="utf-8")
+    print(json.dumps({k: v for k, v in report.items() if k != "rows"}, ensure_ascii=False, indent=2))
+
+
+if __name__ == "__main__":
+    main()

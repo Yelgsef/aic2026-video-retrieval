@@ -340,6 +340,13 @@ Riêng KIS có MRR = 0,6562 và Recall@5 = 0,8158; QA retrieval có MRR = 0,4972
 và Recall@5 = 0,6667. Đây vẫn là pseudo-label tập trung vào một video, chưa
 thay thế strong validation đa video.
 
+QA end-to-end trên 12 pseudo-query: frame hit = 0,4167; answer match = 0,5833;
+joint accuracy = 0,3333; latency trung bình = 8,534 giây. TRAKE end-to-end trên
+10 query ba sự kiện: chọn đúng video = 1,00; thứ tự frame tăng đúng = 1,00;
+event temporal hit = 0,4667; đúng toàn chuỗi = 0,10; latency = 4,396 giây.
+Vì vậy QA evidence selection và TRAKE frame alignment vẫn là hai nhánh cần tối
+ưu; chưa được xem là production-quality.
+
 ## 10. Trạng thái chạy trên dataset
 
 - Code visual pipeline đã build tới final SO400M embeddings.

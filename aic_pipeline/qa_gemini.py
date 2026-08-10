@@ -78,13 +78,15 @@ Rules:
 - If the answer is unclear, choose the best candidate but set confidence below 0.5 and explain the uncertainty.
 """
         response, used_model, last_error = None, self.model, None
-        for model in dict.fromkeys((self.model, "gemini-2.5-flash")):
-            for attempt in range(2):
+        for model in (self.model,):
+            for attempt in range(1):
                 try:
                     response = self.client.models.generate_content(
                         model=model, contents=[prompt, sheet],
-                        config=types.GenerateContentConfig(response_mime_type="application/json",
-                                                           response_schema=QASelection, temperature=0.1))
+                        config=types.GenerateContentConfig(
+                            response_mime_type="application/json", response_schema=QASelection,
+                            temperature=0.1, max_output_tokens=512,
+                            thinking_config=types.ThinkingConfig(thinking_level="MINIMAL")))
                     used_model = model
                     break
                 except Exception as exc:
