@@ -45,7 +45,9 @@ class TemporalAligner:
     def align(self, video_id: str, events: list[str],
               event_windows: list[list[dict[str, Any]]] | None = None,
               decoder: str = "windowed", short_clip: bool = False,
-              clip_seconds: float = 2.0, motion_rerank: bool = False) -> dict[str, Any]:
+              clip_seconds: float = 2.0, motion_rerank: bool = False,
+              clip_scales: tuple[float, ...] | None = None,
+              global_peak_weight: float = 0.35) -> dict[str, Any]:
         if len(events) < 2:
             raise ValueError("TRAKE requires at least two ordered events")
         feature_dir = self.root / "workspace" / "features" / "google_siglip2_base_patch16_224"
@@ -55,9 +57,9 @@ class TemporalAligner:
         groups = self._event_vectors(events)
         scores = np.stack([(embeddings @ group.T).max(axis=1) for group in groups])
         if short_clip:
-            pooled = self._short_clip_embeddings(embeddings, metadata.pts_time.to_numpy(), clip_seconds)
-            clip_scores = np.stack([(pooled @ group.T).max(axis=1) for group in groups])
-            scores = 0.55 * scores + 0.45 * clip_scores
+            scales = clip_scales or (clip_seconds,)
+            scores = self._fuse_short_clip_scores(
+                scores, embeddings, metadata.pts_time.to_numpy(), groups, scales)
         motion_gates = [False] * len(events)
         if motion_rerank:
             scores, motion_gates = motion_aware_scores(events, embeddings, scores)
@@ -79,7 +81,8 @@ class TemporalAligner:
                     scores[event_index, mask] += 0.10 / (rank + 1)
         count, frames = scores.shape
         if decoder == "windowed" and event_windows:
-            positions, sequence_score = self._windowed_decode(scores, metadata, event_windows)
+            positions, sequence_score = self._windowed_decode(
+                scores, metadata, event_windows, global_peak_weight=global_peak_weight)
         else:
             positions, sequence_score = self._dense_decode(scores)
         aligned = []
@@ -92,8 +95,30 @@ class TemporalAligner:
                 "sequence_score": sequence_score, "sampling_stride": 5,
                 "maximum_sampling_offset_frames": 4, "decoder": decoder,
                 "short_clip_reranking": short_clip, "clip_seconds": clip_seconds if short_clip else None,
+                "clip_scales": list(clip_scales or (clip_seconds,)) if short_clip else None,
                 "motion_reranking": motion_rerank, "motion_event_gates": motion_gates,
+                "global_peak_weight": global_peak_weight if decoder == "windowed" else None,
                 "used_scene_priors": bool(event_windows)}
+
+    @classmethod
+    def _fuse_short_clip_scores(cls, frame_scores: np.ndarray, embeddings: np.ndarray,
+                                times: np.ndarray, groups: list[np.ndarray],
+                                scales: tuple[float, ...]) -> np.ndarray:
+        """Fuse frame evidence with several temporal receptive fields.
+
+        Each scale receives equal mass inside the 45% temporal budget. Keeping
+        the original frame score at 55% prevents long windows from washing out
+        short actions. A one-scale call is exactly the previous implementation.
+        """
+        cleaned = tuple(dict.fromkeys(float(value) for value in scales))
+        if not cleaned or any(value <= 0 for value in cleaned):
+            raise ValueError("clip scales must contain positive values")
+        temporal = np.zeros_like(frame_scores, dtype=np.float32)
+        for seconds in cleaned:
+            pooled = cls._short_clip_embeddings(embeddings, times, seconds)
+            temporal += np.stack([(pooled @ group.T).max(axis=1) for group in groups])
+        temporal /= len(cleaned)
+        return 0.55 * frame_scores + 0.45 * temporal
 
     @staticmethod
     def _short_clip_embeddings(embeddings: np.ndarray, times: np.ndarray,
@@ -139,8 +164,11 @@ class TemporalAligner:
 
     @staticmethod
     def _windowed_decode(scores: np.ndarray, metadata: pd.DataFrame,
-                         event_windows: list[list[dict[str, Any]]]) -> tuple[list[int], float]:
+                         event_windows: list[list[dict[str, Any]]],
+                         global_peak_weight: float = 0.35) -> tuple[list[int], float]:
         """Decode over diverse local peaks inside retrieved semantic windows."""
+        if not 0 <= global_peak_weight <= 1:
+            raise ValueError("global_peak_weight must be between zero and one")
         frame_ids = metadata.frame_id.to_numpy()
         candidates: list[list[tuple[int, float]]] = []
         for event_index, windows in enumerate(event_windows):
@@ -169,7 +197,7 @@ class TemporalAligner:
             # Global peaks preserve recall when coarse retrieval misses the right scene.
             for position in np.argsort(-scores[event_index])[:20]:
                 event_candidates[int(position)] = max(event_candidates.get(int(position), -np.inf),
-                                                      0.35 * float(calibrated[position]))
+                                                      global_peak_weight * float(calibrated[position]))
             candidates.append(sorted(event_candidates.items()))
         if any(not group for group in candidates):
             return TemporalAligner._dense_decode(scores)

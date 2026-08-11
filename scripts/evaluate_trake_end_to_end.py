@@ -54,7 +54,10 @@ def main() -> None:
     parser.add_argument("--field-aware", action="store_true")
     parser.add_argument("--short-clip", action="store_true")
     parser.add_argument("--clip-seconds", type=float, default=2.0)
+    parser.add_argument("--clip-scales", type=float, nargs="+",
+                        help="Optional multi-scale short-clip windows in seconds")
     parser.add_argument("--motion-rerank", action="store_true")
+    parser.add_argument("--global-peak-weight", type=float, default=0.35)
     parser.add_argument("--openclip", action=argparse.BooleanOptionalAction, default=False)
     parser.add_argument("--visual-pooling", choices=("max", "top3_mean", "max_top3"), default="max")
     parser.add_argument("--calibrate-openclip", action=argparse.BooleanOptionalAction, default=False)
@@ -72,7 +75,9 @@ def main() -> None:
             args.calibrate_openclip, args.reranker_fusion)
         alignment = aligner.align(selected_video, events, windows, decoder=args.decoder,
                                   short_clip=args.short_clip, clip_seconds=args.clip_seconds,
-                                  motion_rerank=args.motion_rerank)
+                                  motion_rerank=args.motion_rerank,
+                                  clip_scales=tuple(args.clip_scales) if args.clip_scales else None,
+                                  global_peak_weight=args.global_peak_weight)
         predicted = alignment["events"]
         hits = [selected_video == label["video_id"] and truth["start_frame"] <= pred["frame_id"] < truth["end_frame_exclusive"]
                 for truth, pred in zip(label["events"], predicted)]
@@ -88,7 +93,9 @@ def main() -> None:
     report = {"pseudo_labels": True, "decoder": args.decoder, "fusion_mode": args.fusion_mode,
               "field_aware": args.field_aware, "count": len(rows),
               "short_clip": args.short_clip, "clip_seconds": args.clip_seconds if args.short_clip else None,
+              "clip_scales": args.clip_scales if args.short_clip else None,
               "motion_rerank": args.motion_rerank,
+              "global_peak_weight": args.global_peak_weight,
               "openclip": args.openclip, "visual_pooling": args.visual_pooling,
               "calibrate_openclip": args.calibrate_openclip,
               "reranker_fusion": args.reranker_fusion,

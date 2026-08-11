@@ -245,6 +245,11 @@ cảm tính.
   gốc và Grounding DINO chỉ khi query có object phù hợp.
 - TRAKE: RRF + field-aware, không OpenCLIP, windowed temporal decoding và
   short-clip 2 giây. OpenCLIP/calibrated profile làm event hit giảm nên đã loại.
+  Bộ benchmark hiện hỗ trợ multi-scale temporal pooling và điều chỉnh global
+  peak fallback. Trên 10 pseudo-query, 1 giây, multi-scale 1/2/4 giây và
+  global weight 0,20 đều giảm event hit từ 0,90 xuống 0,80 và full-sequence từ
+  0,70 xuống 0,60; vì vậy production tiếp tục khóa single-scale 2 giây với
+  global weight 0,35.
 
 Benchmark silver đa video gồm 60 query trải đều 20 video trên 1.088 scene.
 Profile KIS tăng R@10 từ 85,0% lên 93,3%, nhưng MRR tổng gần như không đổi;

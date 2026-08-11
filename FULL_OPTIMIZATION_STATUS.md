@@ -77,6 +77,9 @@ Mở `http://127.0.0.1:8765/`.
   Gemini chỉ chạy khi hai lượt đầu bất đồng.
 - TRAKE cấu hình giữ lại: video accuracy 100%; event hit 90%; full-sequence
   accuracy 70%; strictly increasing 100%; khoảng 4,83 giây/chuỗi.
+  Ablation mới xác nhận cửa sổ 2 giây tốt hơn cửa sổ 1 giây, multi-scale
+  1/2/4 giây và global-fallback weight 0,20; ba biến thể sau đều chỉ đạt
+  event hit 80% và full-sequence 60%, nên không được bật production.
 
 Đây là pseudo/silver benchmark, chưa phải strong human-verified benchmark.
 
