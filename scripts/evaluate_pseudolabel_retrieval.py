@@ -38,8 +38,9 @@ def main() -> None:
                                  fusion_mode=args.fusion_mode, field_aware=args.field_aware,
                                  openclip=args.openclip)
         expected = int(str(label.scene_id).rsplit(":", 1)[-1])
-        returned = [int(item["scene_index"]) for item in response["results"]]
-        rank = returned.index(expected) + 1 if expected in returned else None
+        expected_key = (str(label.video_id), expected)
+        returned = [(str(item["video_id"]), int(item["scene_index"])) for item in response["results"]]
+        rank = returned.index(expected_key) + 1 if expected_key in returned else None
         rows.append({"query_id": label.query_id, "query_type": label.query_type, "expected_scene": expected,
                      "rank": rank, "latency_seconds": time.perf_counter() - started})
         print(json.dumps(rows[-1], ensure_ascii=False), flush=True)

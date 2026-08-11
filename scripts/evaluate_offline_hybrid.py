@@ -25,6 +25,7 @@ def main() -> None:
         sys.stdout.reconfigure(encoding="utf-8")
     parser = argparse.ArgumentParser(description="Evaluate the offline hybrid query pipeline on weak temporal labels.")
     parser.add_argument("--queries", type=Path, default=ROOT / "workspace" / "validation" / "queries_L21_V001.parquet")
+    parser.add_argument("--index", type=Path, default=ROOT / "workspace" / "offline_index")
     parser.add_argument("--limit", type=int, default=0)
     parser.add_argument("--top-k", type=int, default=10)
     parser.add_argument("--no-reranker", action="store_true")
@@ -41,7 +42,7 @@ def main() -> None:
                 ROOT / "workspace" / "semantic_scenes" / query.video_id / "scenes.parquet")
         expected = target_scene(scene_cache[query.video_id], int(query.ground_truth_shot_id))
         command = [sys.executable, str(ROOT / "scripts" / "query_offline_index.py"), str(query.query_text_vi),
-                   "--top-k", str(args.top_k)]
+                   "--index", str(args.index), "--top-k", str(args.top_k)]
         if args.no_reranker:
             command.append("--no-reranker")
         started = time.perf_counter()
@@ -50,8 +51,9 @@ def main() -> None:
         if process.returncode:
             raise RuntimeError(process.stderr[-2000:])
         payload = json.loads(process.stdout)
-        returned = [int(row["scene_index"]) for row in payload["results"]]
-        rank = returned.index(expected) + 1 if expected in returned else None
+        expected_key = (str(query.video_id), expected)
+        returned = [(str(row["video_id"]), int(row["scene_index"])) for row in payload["results"]]
+        rank = returned.index(expected_key) + 1 if expected_key in returned else None
         reciprocal_ranks.append(0.0 if rank is None else 1.0 / rank)
         latencies.append(latency)
         results.append({"query_id": query.query_id, "query": query.query_text_vi, "expected_scene": expected,

@@ -30,9 +30,11 @@ def main() -> None:
     parser.add_argument("--force", action="store_true")
     args = parser.parse_args()
     destination = args.index / "frame_embeddings_openclip.npy"
-    if destination.exists() and not args.force:
-        raise FileExistsError(f"OpenCLIP index exists: {destination}")
+    keys_destination = args.index / "openclip_frame_keys.parquet"
     frames = pd.read_parquet(args.index / "frames.parquet")
+    key_columns = ["video_id", "frame_id"]
+    if frames.duplicated(key_columns).any():
+        raise ValueError("frames.parquet contains duplicate (video_id, frame_id) keys")
     manifest = pd.read_parquet(ROOT / "workspace/manifests/videos.parquet").set_index("video_id")
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     dtype = torch.float16 if device.type == "cuda" else torch.float32
@@ -40,6 +42,30 @@ def main() -> None:
     model = CLIPModel.from_pretrained(str(args.model), dtype=dtype, local_files_only=True).to(device).eval()
     dimension = int(model.config.projection_dim)
     matrix = np.empty((len(frames), dimension), dtype=np.float32)
+    reused = 0
+    pending = np.ones(len(frames), dtype=bool)
+    if destination.exists() and keys_destination.exists() and not args.force:
+        old_matrix = np.load(destination, mmap_mode="r")
+        old_keys = pd.read_parquet(keys_destination)
+        if len(old_keys) != len(old_matrix) or old_matrix.shape[1] != dimension:
+            raise ValueError("Existing OpenCLIP matrix and key sidecar are incompatible")
+        old_lookup = {
+            (str(row.video_id), int(row.frame_id)): index
+            for index, row in old_keys.reset_index(drop=True).iterrows()
+        }
+        for index, row in frames.reset_index(drop=True).iterrows():
+            old_index = old_lookup.get((str(row.video_id), int(row.frame_id)))
+            if old_index is not None:
+                matrix[index] = old_matrix[old_index]
+                pending[index] = False
+                reused += 1
+        # Windows cannot replace a file while an mmap to that file is open.
+        del old_matrix
+    elif destination.exists() and not args.force:
+        raise FileExistsError(
+            f"OpenCLIP index exists without {keys_destination.name}; rerun once with --force "
+            "to create an incremental-safe key sidecar"
+        )
     started, decoded = time.perf_counter(), 0
 
     def encode(images: list[Image.Image]) -> np.ndarray:
@@ -62,6 +88,7 @@ def main() -> None:
         capture = cv2.VideoCapture(str(manifest.loc[video_id].video_path))
         batch_images: list[Image.Image] = []
         batch_rows: list[int] = []
+        group_decoded = int(pending[group.index].sum())
 
         def flush() -> None:
             nonlocal decoded
@@ -73,6 +100,8 @@ def main() -> None:
             batch_rows.clear()
 
         for row_index, row in group.sort_values("frame_id").iterrows():
+            if not pending[int(row_index)]:
+                continue
             capture.set(cv2.CAP_PROP_POS_FRAMES, int(row.frame_id))
             ok, image = capture.read()
             if not ok:
@@ -84,10 +113,14 @@ def main() -> None:
                 flush()
         flush()
         capture.release()
-        print(json.dumps({"video_id": video_id, "decoded": len(group)}), flush=True)
-    np.save(destination, matrix)
+        print(json.dumps({"video_id": video_id, "decoded": group_decoded}), flush=True)
+    temporary = destination.with_suffix(destination.suffix + ".tmp")
+    with temporary.open("wb") as handle:
+        np.save(handle, matrix)
+    temporary.replace(destination)
+    frames[key_columns].reset_index(drop=True).to_parquet(keys_destination, index=False)
     report = {"schema_version": "0.1.0", "model": str(args.model), "frames": len(frames),
-              "decoded_frames": decoded, "dimension": dimension, "device": str(device),
+              "decoded_frames": decoded, "reused_frames": reused, "dimension": dimension, "device": str(device),
               "elapsed_seconds": time.perf_counter() - started, "output": str(destination)}
     (args.index / "openclip_report.json").write_text(json.dumps(report, indent=2), encoding="utf-8")
     print(json.dumps(report, indent=2))
