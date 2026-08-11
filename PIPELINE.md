@@ -444,6 +444,23 @@ cảnh không gian. Benchmark 12 multi-range pseudo-query sau gating: frame hit 
 Grounding nhận đúng biển số `83-P3 881.43`; câu bãi biển không còn kích hoạt
 nhầm. Grounding DINO chạy FP32 và dùng khoảng 668 MB VRAM riêng.
 
+### QA reasoning v4
+
+QA hiện có router theo loại câu hỏi (`color`, `ocr`, `count`, `object`,
+`spatial`, `motion`, `general`). Câu motion dùng năm frame tuần tự thay vì suy
+luận từ một ảnh; câu object/OCR/color mới kích hoạt Grounding DINO. Mỗi detection
+có cả crop sát và crop ngữ cảnh rộng để giữ quan hệ chủ thể-vật thể. Khi câu trả
+lời ở lượt broad-scene và lượt high-resolution bất đồng ngữ nghĩa, một lượt
+Gemini thứ ba phân xử dựa trên cùng evidence sheet; nếu API lỗi, kết quả hợp lệ
+từ lượt trước vẫn là fallback.
+
+Benchmark 12 multi-range pseudo-query: frame hit 91,7%, answer match và joint
+accuracy 66,7%, mean latency 31,9 giây/query. So với broad-scene v3, frame hit
+tăng từ 83,3% và joint tăng từ 58,3%; độ trễ tăng do lượt phân xử có điều kiện.
+Một request gặp 504 trong lần đo, sau đó retry cho 504/DEADLINE_EXCEEDED đã được
+bổ sung và rerun mục tiêu thành công. Motion direction và câu hỏi mô tả chung
+có nhiều cảnh tương tự vẫn là hai nhóm yếu nhất.
+
 ## 10. Trạng thái chạy trên dataset
 
 - Code visual pipeline đã build tới final SO400M embeddings.

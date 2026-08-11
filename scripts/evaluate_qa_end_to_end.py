@@ -18,6 +18,7 @@ if hasattr(sys.stdout, "reconfigure"):
 
 from aic_pipeline.offline_search_engine import OfflineSearchEngine
 from aic_pipeline.qa_gemini import GeminiQAEngine, qa_grounding_query
+from aic_pipeline.qa_reasoning import answers_equivalent, classify_question
 
 
 def normalize(text: str) -> str:
@@ -70,6 +71,7 @@ def main() -> None:
             actual = normalize(answer["answer"])
             score = ratio(expected, actual) / 100
             answer_match = expected in actual or actual in expected or score >= 0.8
+            semantic_match = answer_match or answers_equivalent(label.answer, answer["answer"])
             accepted = multi_ranges.get(str(label.query_id), [{"video_id": str(label.video_id),
                                                                "start_frame": int(label.start_frame),
                                                                "end_frame_exclusive": int(label.end_frame_exclusive)}])
@@ -81,21 +83,36 @@ def main() -> None:
                          "expected_video_id": label.video_id, "predicted_video_id": answer["video_id"],
                          "predicted_frame_id": answer["frame_id"], "frame_hit": frame_hit,
                          "answer_match": answer_match, "answer_similarity": score,
+                         "semantic_answer_match": semantic_match,
                          "confidence": answer["confidence"], "status": "completed",
                          "accepted_range_count": len(accepted),
                          "object_grounding_used": answer.get("object_grounding_used", False),
                          "object_crop_count": answer.get("object_crop_count", 0),
+                         "qa_type": answer.get("qa_type", classify_question(str(label.query_text_vi)).kind),
+                         "answers_agree": answer.get("answers_agree"),
+                         "adjudicated": answer.get("adjudicated", False),
+                         "temporal_evidence_used": answer.get("temporal_evidence_used", False),
                          "latency_seconds": time.perf_counter() - started})
         except Exception as exc:
             rows.append({"query_id": label.query_id, "query": label.query_text_vi,
                          "status": "failed", "error": f"{type(exc).__name__}: {exc}",
-                         "frame_hit": False, "answer_match": False,
+                         "frame_hit": False, "answer_match": False, "semantic_answer_match": False,
                          "latency_seconds": time.perf_counter() - started})
         print(json.dumps(rows[-1], ensure_ascii=False), flush=True)
         # Crash-resumable checkpoint: external VQA calls must not lose prior rows.
         args.output.write_text(json.dumps({"partial": True, "rows": rows}, ensure_ascii=False, indent=2),
                                encoding="utf-8")
     count = len(rows)
+    by_type = {}
+    for qa_type in sorted({str(row.get("qa_type", "unknown")) for row in rows}):
+        selected = [row for row in rows if str(row.get("qa_type", "unknown")) == qa_type]
+        by_type[qa_type] = {
+            "count": len(selected),
+            "frame_hit_rate": sum(row["frame_hit"] for row in selected) / len(selected),
+            "semantic_answer_match_rate": sum(row["semantic_answer_match"] for row in selected) / len(selected),
+            "semantic_joint_accuracy": sum(row["frame_hit"] and row["semantic_answer_match"]
+                                           for row in selected) / len(selected),
+        }
     report = {"pseudo_labels": True, "count": count,
               "retrieval_config": {"fusion_mode": args.fusion_mode, "field_aware": args.field_aware,
                                    "openclip": args.openclip, "visual_pooling": args.visual_pooling,
@@ -105,6 +122,9 @@ def main() -> None:
               "frame_hit_rate": sum(r["frame_hit"] for r in rows) / count,
               "answer_match_rate": sum(r["answer_match"] for r in rows) / count,
               "joint_accuracy": sum(r["frame_hit"] and r["answer_match"] for r in rows) / count,
+              "semantic_answer_match_rate": sum(r["semantic_answer_match"] for r in rows) / count,
+              "semantic_joint_accuracy": sum(r["frame_hit"] and r["semantic_answer_match"] for r in rows) / count,
+              "by_qa_type": by_type,
               "mean_latency_seconds": sum(r["latency_seconds"] for r in rows) / count,
               "rows": rows}
     args.output.write_text(json.dumps(report, ensure_ascii=False, indent=2), encoding="utf-8")

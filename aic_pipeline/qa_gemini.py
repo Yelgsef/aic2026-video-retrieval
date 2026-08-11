@@ -15,6 +15,7 @@ from PIL import Image, ImageDraw, ImageOps
 from pydantic import BaseModel, Field
 
 from .object_grounding import GroundingDinoCropper
+from .qa_reasoning import answers_equivalent, classify_question, temporal_frame_ids
 
 
 class QASelection(BaseModel):
@@ -99,6 +100,7 @@ class GeminiQAEngine:
         return sheet, mapping
 
     def answer(self, question: str, retrieval_results: list[dict[str, Any]], maximum_candidates: int = 24) -> dict[str, Any]:
+        reasoning = classify_question(question)
         candidates = []
         # First pass maximizes scene recall: one strong frame from up to 24
         # scenes. The second pass below expands only the selected scene to
@@ -122,6 +124,7 @@ class GeminiQAEngine:
         prompt = f"""Answer this AIC visual question using only the candidate frames.
 Question: {question}
 First select the single frame that best matches the described event, then answer the question from visible evidence.
+Question type: {reasoning.kind}. Specialized instruction: {reasoning.instruction}
 Rules:
 - candidate_label must be one of {', '.join(mapping)}.
 - Do not use outside knowledge or infer hidden information.
@@ -130,7 +133,7 @@ Rules:
 """
         response, used_model, last_error = None, self.model, None
         for model in (self.model,):
-            for attempt in range(1):
+            for attempt in range(2):
                 try:
                     response = self.client.models.generate_content(
                         model=model, contents=[prompt, sheet],
@@ -142,7 +145,8 @@ Rules:
                     break
                 except Exception as exc:
                     last_error = exc
-                    if not any(code in str(exc) for code in ("429", "503", "RESOURCE_EXHAUSTED", "UNAVAILABLE")):
+                    if not any(code in str(exc) for code in (
+                            "429", "503", "504", "RESOURCE_EXHAUSTED", "UNAVAILABLE", "DEADLINE_EXCEEDED")):
                         raise
                     time.sleep(3 * (attempt + 1))
             if response is not None:
@@ -150,6 +154,7 @@ Rules:
         if response is None:
             raise RuntimeError(f"Gemini QA failed after retries: {last_error}")
         selection = QASelection.model_validate_json(response.text)
+        initial_selection = selection
         label = selection.candidate_label.strip().upper()
         if label not in mapping:
             raise ValueError(f"Gemini returned invalid candidate label: {label}")
@@ -158,14 +163,19 @@ Rules:
         # Second pass: inspect several full-size views from only the selected
         # scene. This preserves broad scene recall while making OCR and small
         # objects much easier than on a 24-tile contact sheet.
-        detail_ids = []
+        if reasoning.needs_temporal:
+            detail_ids = temporal_frame_ids(
+                int(candidate["start_frame"]), int(candidate["end_frame_exclusive"]),
+                int(candidate["best_frame_id"]), maximum=5)
+        else:
+            detail_ids = []
         for frame_id in (candidate.get("top_visual_frame_ids", [])
                          + candidate.get("representative_frame_ids", [])):
+            if len(detail_ids) >= (5 if reasoning.needs_temporal else 4):
+                break
             frame_id = int(frame_id)
             if frame_id not in detail_ids:
                 detail_ids.append(frame_id)
-            if len(detail_ids) == 4:
-                break
         detail_candidates = []
         for frame_id in detail_ids:
             item = dict(candidate)
@@ -174,9 +184,9 @@ Rules:
             detail_candidates.append(item)
         object_crop_count = 0
         grounder = self._get_grounder()
-        if grounder and detail_candidates:
+        if grounder and detail_candidates and reasoning.needs_object_crop:
             try:
-                grounded = grounder.crop([item["_image"] for item in detail_candidates], question, maximum=4)
+                grounded = grounder.crop([item["_image"] for item in detail_candidates], question, maximum=3)
                 for detection in grounded:
                     base = dict(detail_candidates[int(detection["image_index"])])
                     base["_image"] = detection["image"]
@@ -185,12 +195,24 @@ Rules:
                     base["_object_score"] = detection["score"]
                     detail_candidates.append(base)
                     object_crop_count += 1
+                    # Preserve subject-object relations with a second, wider crop.
+                    source = detail_candidates[int(detection["image_index"])]["_image"]
+                    x1, y1, x2, y2 = detection["box"]
+                    width, height = x2 - x1, y2 - y1
+                    context = source.crop((max(0, int(x1 - width)), max(0, int(y1 - height)),
+                                           min(source.width, int(x2 + width)),
+                                           min(source.height, int(y2 + height))))
+                    context_item = dict(base)
+                    context_item["_image"] = context
+                    context_item["_object_label"] = f"{detection['label']}:context"
+                    detail_candidates.append(context_item)
             except Exception:
                 object_crop_count = 0
         if detail_candidates:
             detail_sheet, detail_mapping = self._sheet(detail_candidates)
             detail_prompt = f"""Answer the visual question from these high-resolution views of one scene.
 Question: {question}
+Question type: {reasoning.kind}. Specialized instruction: {reasoning.instruction}
 Select the clearest evidence frame. Read exact visible text carefully. Do not infer hidden facts.
 candidate_label must be one of {', '.join(detail_mapping)}. Keep the answer short.
 """
@@ -211,10 +233,40 @@ candidate_label must be one of {', '.join(detail_mapping)}. Keep the answer shor
             except Exception:
                 # The first pass remains a valid bounded-latency fallback.
                 pass
+        adjudicated = False
+        answers_agree = answers_equivalent(initial_selection.answer, selection.answer)
+        if refined_answer and not answers_agree and detail_candidates:
+            adjudication_prompt = f"""Resolve a disagreement between two visual answers using only this evidence sheet.
+Question: {question}
+Question type: {reasoning.kind}. {reasoning.instruction}
+Answer A: {initial_selection.answer}
+Answer B: {selection.answer}
+Select the clearest evidence frame and return the correct short answer. Do not choose by majority or outside knowledge.
+candidate_label must be one of {', '.join(detail_mapping)}.
+"""
+            try:
+                adjudication_response = self.client.models.generate_content(
+                    model=used_model, contents=[adjudication_prompt, detail_sheet],
+                    config=types.GenerateContentConfig(
+                        response_mime_type="application/json", response_schema=QASelection,
+                        temperature=0.0, max_output_tokens=512,
+                        thinking_config=types.ThinkingConfig(thinking_level="MINIMAL")))
+                adjudicated_selection = QASelection.model_validate_json(adjudication_response.text)
+                adjudicated_label = adjudicated_selection.candidate_label.strip().upper()
+                if adjudicated_label in detail_mapping:
+                    selection = adjudicated_selection
+                    label = adjudicated_label
+                    candidate = detail_mapping[adjudicated_label]
+                    adjudicated = True
+            except Exception:
+                pass
         return {"task": "QA", "video_id": str(candidate["video_id"]),
                 "frame_id": int(candidate["best_frame_id"]), "scene_index": int(candidate["scene_index"]),
                 "answer": selection.answer, "confidence": selection.confidence,
                 "evidence_vi": selection.evidence_vi, "candidate_label": label,
                 "model": used_model, "candidate_count": len(candidates),
                 "refined_answer": refined_answer, "object_grounding_used": object_crop_count > 0,
-                "object_crop_count": object_crop_count}
+                "object_crop_count": object_crop_count, "qa_type": reasoning.kind,
+                "temporal_evidence_used": reasoning.needs_temporal,
+                "first_answer": initial_selection.answer, "answers_agree": answers_agree,
+                "adjudicated": adjudicated}

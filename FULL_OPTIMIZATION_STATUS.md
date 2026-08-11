@@ -72,12 +72,23 @@ Mở `http://127.0.0.1:8765/`.
 
 - Multi-video baseline: MRR 0,574; R@1 41,7%; R@10 85,0%.
 - KIS quality candidate: R@10 tổng 93,3%; KIS MRR 0,555 -> 0,567.
-- QA broad-scene: frame hit 83,3%; answer match 58,3%; joint 58,3%; khoảng
-  20,1 giây/query vì hai Gemini passes và object grounding có điều kiện.
+- QA reasoning v4: frame hit 91,7%; answer/joint 66,7%; khoảng 31,9 giây/query.
+  Router theo loại câu hỏi, temporal strip, relation-aware crop và adjudication
+  Gemini chỉ chạy khi hai lượt đầu bất đồng.
 - TRAKE cấu hình giữ lại: video accuracy 100%; event hit 90%; full-sequence
   accuracy 70%; strictly increasing 100%; khoảng 4,83 giây/chuỗi.
 
 Đây là pseudo/silver benchmark, chưa phải strong human-verified benchmark.
+
+QA reasoning v4 phân loại câu hỏi thành color/OCR/count/object/spatial/motion/
+general. Motion dùng năm frame theo thứ tự thời gian; object, OCR và color mới
+kích hoạt crop, đồng thời giữ thêm crop rộng để không mất quan hệ chủ thể-vật
+thể. Nếu đáp án broad-scene và high-resolution không tương đương ngữ nghĩa,
+Gemini thực hiện một lượt phân xử có điều kiện. Trên 12 multi-range pseudo-query,
+frame hit tăng 83,3% -> 91,7% và joint accuracy tăng 58,3% -> 66,7%. Một query
+gặp lỗi 504 trong lượt benchmark; retry cho 504/DEADLINE_EXCEEDED đã được bổ
+sung và rerun mục tiêu hoàn tất. Đây vẫn là pseudo benchmark, không thay thế
+strong human-verified validation.
 
 ## Điều kiện trước production
 
