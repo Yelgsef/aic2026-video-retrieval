@@ -18,6 +18,7 @@ from rapidfuzz import fuzz
 from transformers import AutoModel, AutoModelForSequenceClassification, AutoProcessor, AutoTokenizer, CLIPModel
 
 from .query_understanding import build_query_plan
+from .object_spatial import structured_object_scores
 from .retrieval_fusion import aggregate_scene_scores, field_coverage, robust_unit
 from .submission import build_ranked_submissions
 from .task_router import route_query
@@ -33,10 +34,13 @@ def char_ngrams(text: str, size: int = 3) -> list[str]:
 
 def intent_weights(intent: str) -> dict[str, float]:
     if intent == "ocr":
-        return {"visual": 1.0, "openclip": 0.5, "lexical": 1.5, "fuzzy": 1.5, "semantic": 1.0, "reranker": 2.0}
+        return {"visual": 1.0, "openclip": 0.5, "lexical": 1.5, "fuzzy": 1.5,
+                "semantic": 1.0, "object": 0.5, "reranker": 2.0}
     if intent == "asr":
-        return {"visual": 0.75, "openclip": 0.25, "lexical": 1.75, "fuzzy": 0.5, "semantic": 1.5, "reranker": 2.0}
-    return {"visual": 2.0, "openclip": 0.75, "lexical": 0.25, "fuzzy": 0.25, "semantic": 0.75, "reranker": 1.0}
+        return {"visual": 0.75, "openclip": 0.25, "lexical": 1.75, "fuzzy": 0.5,
+                "semantic": 1.5, "object": 0.25, "reranker": 2.0}
+    return {"visual": 2.0, "openclip": 0.75, "lexical": 0.25, "fuzzy": 0.25,
+            "semantic": 0.75, "object": 1.25, "reranker": 1.0}
 
 
 class OfflineSearchEngine:
@@ -180,6 +184,11 @@ class OfflineSearchEngine:
             visual, best_frames, top_frames = self._siglip_scores(list(plan.variants), visual_pooling)
             semantic, semantic_fields = self._bge_scores(plan.normalized)
             openclip_scores = self._openclip_scores(list(plan.variants), visual_pooling) if openclip else None
+            if "object_spatial_json" in self.scenes:
+                object_scores, object_constraints = structured_object_scores(
+                    plan.normalized, self.scenes.object_spatial_json.tolist())
+            else:
+                object_scores, object_constraints = np.zeros(len(self.scenes), dtype=np.float32), []
             if field_aware and semantic_fields:
                 if plan.intent == "asr" and "asr" in semantic_fields:
                     semantic = np.maximum(semantic, semantic_fields["asr"])
@@ -203,6 +212,12 @@ class OfflineSearchEngine:
             }
             if openclip_scores is not None:
                 orders["openclip"] = np.argsort(-openclip_scores)[:candidate_k].tolist()
+            if object_constraints:
+                # Do not inject zero-evidence scenes into the candidate union:
+                # the detector legitimately misses some queried objects.
+                object_order = np.argsort(-object_scores)
+                orders["object"] = [int(row) for row in object_order
+                                    if object_scores[row] > 0][:candidate_k]
             fused: dict[int, float] = {}
             for branch, order in orders.items():
                 for rank, row in enumerate(order, 1):
@@ -225,6 +240,8 @@ class OfflineSearchEngine:
                                    + 0.010 * coverage)
                     if calibrate_openclip and openclip_unit is not None:
                         fused[row] += 0.006 * weights["openclip"] * float(openclip_unit[row])
+                    if object_constraints:
+                        fused[row] += 0.015 * weights["object"] * float(object_scores[row])
             preliminary = sorted(fused, key=fused.get, reverse=True)[:rerank_k]
             has_visual_text = any(bool(str(self.scenes.iloc[row].visual_summary).strip()) for row in preliminary)
             use_reranker = bool(preliminary) and (plan.intent != "visual" or has_visual_text)
@@ -248,6 +265,8 @@ class OfflineSearchEngine:
                                 "semantic_score": float(semantic[row_id]), "rapidfuzz_score": float(rapid[row_id]),
                                 "openclip_score": (float(openclip_scores[row_id])
                                                    if openclip_scores is not None else None),
+                                "object_spatial_score": (float(object_scores[row_id])
+                                                         if object_constraints else None),
                                 "semantic_field_scores": {name: float(values[row_id])
                                                           for name, values in semantic_fields.items()},
                                 "field_coverage_score": coverage_scores.get(row_id),
@@ -267,6 +286,7 @@ class OfflineSearchEngine:
                     "fusion_mode": fusion_mode, "field_aware": field_aware, "openclip_used": openclip,
                     "visual_pooling": visual_pooling,
                     "calibrate_openclip": calibrate_openclip, "reranker_fusion": resolved_reranker_fusion,
+                    "object_constraints": object_constraints,
                     "reranker_used": use_reranker, "results": results, "submissions": submissions,
                     "requires_temporal_alignment": task.task == "TRAKE"}
 

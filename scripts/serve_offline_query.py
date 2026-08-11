@@ -7,6 +7,7 @@ import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
+import numpy as np
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
@@ -15,6 +16,7 @@ from aic_pipeline.offline_search_engine import OfflineSearchEngine
 from aic_pipeline.task_router import route_query
 from aic_pipeline.qa_gemini import GeminiQAEngine, qa_grounding_query
 from aic_pipeline.temporal_alignment import TemporalAligner
+from aic_pipeline.retrieval_fusion import robust_unit
 
 
 def main() -> None:
@@ -103,26 +105,45 @@ def main() -> None:
                                                       reranker_fusion="rank")
                                         for event in task.events]
                     per_event = []
+                    per_event_object = []
                     all_videos = set()
                     for retrieval in event_retrievals:
                         scores = {}
+                        object_scores = {}
                         for result in retrieval["results"]:
                             video = result["video_id"]
                             scores[video] = max(scores.get(video, float("-inf")),
                                                 float(result["fusion_score"]))
+                            if result.get("object_spatial_score") is not None:
+                                object_scores[video] = max(object_scores.get(video, 0.0),
+                                                           float(result["object_spatial_score"]))
                         per_event.append(scores)
+                        per_event_object.append(object_scores)
                         all_videos.update(scores)
                     video_scores = {}
+                    ordered_videos = sorted(all_videos)
+                    fusion_units = robust_unit(np.array([
+                        sum(scores.get(video, 0.0) for scores in per_event) / len(per_event)
+                        for video in ordered_videos], dtype=np.float32))
+                    object_units = robust_unit(np.array([
+                        sum(scores.get(video, 0.0) for scores in per_event_object) / len(per_event_object)
+                        for video in ordered_videos], dtype=np.float32))
                     for video in all_videos:
                         available = [scores[video] for scores in per_event if video in scores]
                         coverage = len(available) / len(per_event)
                         # Coverage is primary; mean event evidence breaks ties.
+                        position = ordered_videos.index(video)
+                        object_weight = 0.9 if any(per_event_object) else 0.0
                         video_scores[video] = {"coverage": coverage,
                                                "mean_event_score": sum(available) / len(available),
+                                               "mean_object_score": float(object_units[position]),
+                                               "video_fusion_score": float(
+                                                   (1 - object_weight) * fusion_units[position]
+                                                   + object_weight * object_units[position]),
                                                "event_scores": [scores.get(video) for scores in per_event]}
                     video_id = max(video_scores,
                                    key=lambda video: (video_scores[video]["coverage"],
-                                                      video_scores[video]["mean_event_score"]))
+                                                      video_scores[video]["video_fusion_score"]))
                     event_windows = [[result for result in retrieval["results"]
                                       if result["video_id"] == video_id][:5]
                                      for retrieval in event_retrievals]

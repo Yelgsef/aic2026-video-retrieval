@@ -14,6 +14,7 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 
 from aic_pipeline.ocr_filter import filter_ocr_lines, recurrence_counts
+from aic_pipeline.object_spatial import aggregate_scene_objects, object_spatial_text
 
 
 def unique(values: list[Any]) -> list[str]:
@@ -35,7 +36,8 @@ def load_gemini(path: Path) -> dict[str, dict[str, Any]]:
 
 
 def retrieval_text(scene: Any, description: dict[str, Any], detected_objects: list[str] | None = None,
-                   searchable_ocr: list[str] | None = None, normalized_asr: str | None = None) -> str:
+                   searchable_ocr: list[str] | None = None, normalized_asr: str | None = None,
+                   spatial_text: str = "") -> str:
     ocr = searchable_ocr if searchable_ocr is not None else unique(
         [item.get("text", "") for item in description.get("ocr_lines", [])])
     sections = [
@@ -44,6 +46,7 @@ def retrieval_text(scene: Any, description: dict[str, Any], detected_objects: li
         ("Lời nói", [normalized_asr or scene.asr_exact, scene.asr_context]),
         ("Người", description.get("people", [])),
         ("Vật thể", list(description.get("objects", [])) + list(detected_objects or [])),
+        ("Đếm vị trí quan hệ vật thể", [spatial_text]),
         ("Hành động", description.get("actions", [])),
         ("Địa điểm", description.get("locations", [])),
         ("Sự kiện", description.get("events", [])),
@@ -66,8 +69,10 @@ def main() -> None:
     scene_count = len(scenes)
     detections_path = ROOT / "workspace" / "objects_yoloworld" / args.video_id / "detections.parquet"
     detected_by_scene: dict[int, list[str]] = {}
+    spatial_by_scene: dict[int, dict[str, Any]] = {}
     if detections_path.exists():
         detections = pd.read_parquet(detections_path)
+        spatial_by_scene = aggregate_scene_objects(detections)
         detections = detections.loc[detections.confidence.ge(0.20)]
         for scene_index, group in detections.groupby("scene_index"):
             labels = (group.sort_values("confidence", ascending=False)
@@ -84,6 +89,8 @@ def main() -> None:
         record = gemini.get(str(scene.scene_id), {})
         description = record.get("description", {})
         detected_objects = detected_by_scene.get(int(scene.scene_index), [])
+        object_spatial = spatial_by_scene.get(int(scene.scene_index), {"objects": {}, "relations": []})
+        spatial_text = object_spatial_text(object_spatial)
         ocr_lines = description.get("ocr_lines", [])
         ocr_text_raw = unique([item.get("text", "") for item in ocr_lines])
         ocr_text, ocr_filtered = filter_ocr_lines(
@@ -102,7 +109,7 @@ def main() -> None:
                             and float(item["start"]) < float(scene.end_time)]
         normalized_asr = " ".join(part for part in normalized_parts if part) or str(scene.asr_exact or "")
         document = {
-            "schema_version": "0.3.0", "document_id": str(scene.scene_id), "video_id": args.video_id,
+            "schema_version": "0.4.0", "document_id": str(scene.scene_id), "video_id": args.video_id,
             "scene_index": int(scene.scene_index), "start_frame": int(scene.start_frame),
             "end_frame_exclusive": int(scene.end_frame_exclusive), "start_time": float(scene.start_time),
             "end_time": float(scene.end_time), "shot_ids": [int(v) for v in scene.shot_ids],
@@ -114,13 +121,15 @@ def main() -> None:
             "people": unique(description.get("people", [])),
             "objects": unique(list(description.get("objects", [])) + detected_objects),
             "detected_objects": detected_objects,
+            "object_spatial": object_spatial, "object_spatial_text": spatial_text,
             "actions": unique(description.get("actions", [])), "locations": unique(description.get("locations", [])),
             "events": unique(description.get("events", [])),
             "search_keywords": unique(description.get("search_keywords_vi", [])),
             "uncertainties": unique(description.get("uncertainties", [])),
             "has_gemini": bool(record), "has_object_detection": bool(detected_objects),
             "has_fullres_ocr": bool(fullres_ocr),
-            "retrieval_text": retrieval_text(scene, description, detected_objects, ocr_text, normalized_asr),
+            "retrieval_text": retrieval_text(scene, description, detected_objects, ocr_text,
+                                               normalized_asr, spatial_text),
             "provenance": {"semantic_scenes": f"workspace/semantic_scenes/{args.video_id}/scenes.parquet",
                            "gemini": record.get("provenance"), "asr_model": "faster-whisper-large-v3",
                            "asr_normalization": "gemini-conditional" if asr_segments else None,
@@ -135,7 +144,7 @@ def main() -> None:
     flat = [{k: v for k, v in doc.items() if k not in {"ocr_lines", "ocr_filtered", "provenance"}}
             for doc in documents]
     pd.DataFrame(flat).to_parquet(output / "scenes.parquet", index=False)
-    report = {"schema_version": "0.3.0", "video_id": args.video_id, "documents": len(documents),
+    report = {"schema_version": "0.4.0", "video_id": args.video_id, "documents": len(documents),
               "with_gemini": sum(doc["has_gemini"] for doc in documents),
               "with_object_detection": sum(doc["has_object_detection"] for doc in documents),
               "with_asr": sum(bool(doc["asr_text"]) for doc in documents),

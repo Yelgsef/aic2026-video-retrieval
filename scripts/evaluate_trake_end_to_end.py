@@ -6,6 +6,8 @@ import sys
 import time
 from pathlib import Path
 
+import numpy as np
+
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
@@ -13,14 +15,16 @@ sys.path.insert(0, str(ROOT))
 from aic_pipeline.offline_search_engine import OfflineSearchEngine
 from aic_pipeline.temporal_alignment import TemporalAligner
 from aic_pipeline.xclip_reranker import XClipWindowReranker
+from aic_pipeline.retrieval_fusion import robust_unit
 
 
 def choose_video(engine: OfflineSearchEngine, events: list[str],
                  fusion_mode: str = "rrf", field_aware: bool = False,
                  openclip: bool = False, visual_pooling: str = "max",
                  calibrate_openclip: bool = False,
-                 reranker_fusion: str = "rank") -> tuple[str, dict, list[list[dict]]]:
-    per_event, event_results, videos = [], [], set()
+                 reranker_fusion: str = "rank",
+                 object_video_weight: float = 0.0) -> tuple[str, dict, list[list[dict]]]:
+    per_event, per_event_object, event_results, videos = [], [], [], set()
     for event in events:
         result = engine.search(event, top_k=100, rerank_k=30, fusion_mode=fusion_mode,
                                field_aware=field_aware, openclip=openclip,
@@ -29,17 +33,33 @@ def choose_video(engine: OfflineSearchEngine, events: list[str],
                                reranker_fusion=reranker_fusion)
         event_results.append(result["results"])
         scores = {}
+        object_scores = {}
         for row in result["results"]:
             video_id = row["video_id"]
             scores[video_id] = max(scores.get(video_id, float("-inf")), float(row["fusion_score"]))
+            if row.get("object_spatial_score") is not None:
+                object_scores[video_id] = max(object_scores.get(video_id, 0.0),
+                                              float(row["object_spatial_score"]))
         per_event.append(scores)
+        per_event_object.append(object_scores)
         videos.update(scores)
     summary = {}
+    ordered_videos = sorted(videos)
+    fusion_raw = np.array([sum(scores.get(video, 0.0) for scores in per_event) / len(per_event)
+                           for video in ordered_videos], dtype=np.float32)
+    object_raw = np.array([sum(scores.get(video, 0.0) for scores in per_event_object) / len(per_event_object)
+                           for video in ordered_videos], dtype=np.float32)
+    fusion_units, object_units = robust_unit(fusion_raw), robust_unit(object_raw)
     for video_id in videos:
         available = [scores[video_id] for scores in per_event if video_id in scores]
+        position = ordered_videos.index(video_id)
+        blended = ((1 - object_video_weight) * float(fusion_units[position])
+                   + object_video_weight * float(object_units[position]))
         summary[video_id] = {"coverage": len(available) / len(per_event),
-                             "mean_event_score": sum(available) / len(available)}
-    selected = max(summary, key=lambda v: (summary[v]["coverage"], summary[v]["mean_event_score"]))
+                             "mean_event_score": sum(available) / len(available),
+                             "mean_object_score": float(object_raw[position]),
+                             "video_fusion_score": blended}
+    selected = max(summary, key=lambda v: (summary[v]["coverage"], summary[v]["video_fusion_score"]))
     windows = [[row for row in results if row["video_id"] == selected][:5]
                for results in event_results]
     return selected, summary, windows
@@ -62,6 +82,7 @@ def main() -> None:
     parser.add_argument("--global-peak-weight", type=float, default=0.35)
     parser.add_argument("--xclip", action="store_true")
     parser.add_argument("--xclip-weight", type=float, default=0.25)
+    parser.add_argument("--object-video-weight", type=float, default=0.0)
     parser.add_argument("--openclip", action=argparse.BooleanOptionalAction, default=False)
     parser.add_argument("--visual-pooling", choices=("max", "top3_mean", "max_top3"), default="max")
     parser.add_argument("--calibrate-openclip", action=argparse.BooleanOptionalAction, default=False)
@@ -79,7 +100,7 @@ def main() -> None:
         events = [x["description_vi"] for x in label["events"]]
         selected_video, candidates, windows = choose_video(
             engine, events, args.fusion_mode, args.field_aware, args.openclip, args.visual_pooling,
-            args.calibrate_openclip, args.reranker_fusion)
+            args.calibrate_openclip, args.reranker_fusion, args.object_video_weight)
         if xclip is not None:
             windows = xclip.rerank(selected_video, events, windows, weight=args.xclip_weight)
         alignment = aligner.align(selected_video, events, windows, decoder=args.decoder,
@@ -106,6 +127,7 @@ def main() -> None:
               "motion_rerank": args.motion_rerank,
               "global_peak_weight": args.global_peak_weight,
               "xclip": args.xclip, "xclip_weight": args.xclip_weight if args.xclip else None,
+              "object_video_weight": args.object_video_weight,
               "openclip": args.openclip, "visual_pooling": args.visual_pooling,
               "calibrate_openclip": args.calibrate_openclip,
               "reranker_fusion": args.reranker_fusion,

@@ -84,6 +84,13 @@ def main() -> None:
                     "ocr_text": list(document.ocr_text) if document is not None else [],
                     "entities_text": " ".join(str(value) for field in ("people", "objects", "actions", "locations", "events", "search_keywords")
                                               for value in (document[field] if document is not None else [])),
+                    "object_spatial_json": (json.dumps(document.object_spatial, ensure_ascii=False,
+                                                         default=lambda value: value.tolist())
+                                            if document is not None and "object_spatial" in document.index
+                                            else "{}"),
+                    "object_spatial_text": (str(document.object_spatial_text)
+                                            if document is not None and "object_spatial_text" in document.index
+                                            else ""),
                     "retrieval_text": str(document.retrieval_text if document is not None else " ".join(
                         filter(None, [str(scene.asr_exact or ""), str(scene.asr_context or "")]))),
                 })
@@ -115,7 +122,7 @@ def main() -> None:
     ])
     connection.executemany("INSERT INTO scene_fts(rowid,document_id,asr_text,asr_context,visual_summary,ocr_text,entities_text,retrieval_text) VALUES(?,?,?,?,?,?,?,?)", [
         (r["row_id"] + 1, r["document_id"], r["asr_text"], r["asr_context"], r["visual_summary"],
-         " ".join(r["ocr_text"]), r["entities_text"], r["retrieval_text"]) for r in rows
+         " ".join(r["ocr_text"]), r["entities_text"] + " " + r["object_spatial_text"], r["retrieval_text"]) for r in rows
     ])
     connection.executemany("INSERT INTO fuzzy_fts(rowid,document_id,grams) VALUES(?,?,?)", [
         (r["row_id"] + 1, r["document_id"], character_ngrams(" ".join(r["ocr_text"]) + " " + r["entities_text"] + " " + r["retrieval_text"]))

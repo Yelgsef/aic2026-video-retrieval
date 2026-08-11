@@ -424,6 +424,14 @@ video/scene retrieval cho mô tả object-count-position, không phải thiếu 
 frame. Bộ này được giữ làm hard-negative validation để phát triển spatial/object
 indexing, chưa phải strong human-verified benchmark.
 
+Object-spatial indexing v1 dùng lại YOLO detections, không chạy model lần hai.
+Mỗi scene lưu `object_spatial_json` và text tương ứng: `max_count` được lấy theo
+từng frame, vị trí từ tâm bbox chuẩn hóa, quan hệ từ các cặp bbox đồng thời.
+Structured query parser hiểu số đếm tiếng Việt, alias Việt-Anh và vị trí
+trái/giữa/phải/trên/dưới. Trên hard labels, KIS MRR tăng 0,0893 -> 0,1098;
+QA R@10 tăng 0,1667 -> 0,2222. TRAKE dùng thêm object score ở bước chọn video
+với weight 0,9, tăng video accuracy 0,10 -> 0,25 nhưng full-sequence vẫn 0.
+
 QA end-to-end trên 12 pseudo-query: frame hit = 0,4167; answer match = 0,5833;
 joint accuracy = 0,3333; latency trung bình = 8,534 giây. TRAKE end-to-end trên
 10 query ba sự kiện: chọn đúng video = 1,00; thứ tự frame tăng đúng = 1,00;

@@ -95,6 +95,15 @@ hit/full-sequence 0%, dù stride-5 feature phủ đủ 60/60 ground-truth event
 ranges. Pipeline hiện yếu rõ rệt với count + spatial relation + object-only
 descriptions; không được dùng bộ này để tuyên bố production quality.
 
+Object-spatial v1 đã tái sử dụng YOLO boxes của đủ 20/20 video: đếm cực đại
+theo từng frame (không đếm trùng xuyên thời gian), tâm bbox theo left/center/
+right và top/middle/bottom, cùng các quan hệ left/right/above/below/near. KIS
+hard-label tăng MRR 0,0893 -> 0,1098 và R@10 19,54% -> 21,84%. QA retrieval
+tăng MRR 0,0741 -> 0,0810, R@5 8,33% -> 13,89% và R@10 16,67% -> 22,22%.
+TRAKE object video fusion weight 0,9 tăng video accuracy 10% -> 25%, nhưng
+event hit chỉ 3,33% và full-sequence vẫn 0%; scene alignment object-only vẫn
+là điểm yếu chưa giải quyết.
+
 QA reasoning v4 phân loại câu hỏi thành color/OCR/count/object/spatial/motion/
 general. Motion dùng năm frame theo thứ tự thời gian; object, OCR và color mới
 kích hoạt crop, đồng thời giữ thêm crop rộng để không mất quan hệ chủ thể-vật
