@@ -14,8 +14,11 @@ from typing import Any
 import pandas as pd
 from PIL import Image, ImageDraw, ImageFont
 
-
 ROOT = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(ROOT))
+from aic_pipeline.scene_evidence import adaptive_frame_ids
+
+
 BATCH_ROOT = ROOT / "workspace" / "gemini_batches"
 DB_PATH = BATCH_ROOT / "jobs.sqlite3"
 TERMINAL = {"JOB_STATE_SUCCEEDED", "JOB_STATE_FAILED", "JOB_STATE_CANCELLED", "JOB_STATE_EXPIRED"}
@@ -93,21 +96,25 @@ def extract_frames(path: Path, frame_ids: set[int]) -> dict[int, Image.Image]:
     return output
 
 
-def contact_sheet(scene: dict[str, Any], frames: dict[int, Image.Image], output: Path) -> None:
-    reps = scene["representative_frames"]
-    tile_w, tile_h, label_h, cols = 448, 252, 28, 2
-    rows = (len(reps) + cols - 1) // cols
+def contact_sheet(scene: dict[str, Any], frames: dict[int, Image.Image], output: Path,
+                  frame_ids: list[int] | None = None) -> None:
+    ids = frame_ids or [int(row["frame_id"]) for row in scene["representative_frames"]]
+    tile_w, tile_h, label_h, cols = 320, 180, 24, 5
+    rows = (len(ids) + cols - 1) // cols
     sheet = Image.new("RGB", (tile_w * cols, (tile_h + label_h) * rows), "white")
     draw = ImageDraw.Draw(sheet)
     font = ImageFont.load_default()
-    for index, rep in enumerate(reps):
-        image = frames[int(rep["frame_id"])].copy()
+    for index, frame_id in enumerate(ids):
+        image = frames[int(frame_id)].copy()
         image.thumbnail((tile_w, tile_h), Image.Resampling.LANCZOS)
         canvas = Image.new("RGB", (tile_w, tile_h), "black")
         canvas.paste(image, ((tile_w - image.width) // 2, (tile_h - image.height) // 2))
         x, y = (index % cols) * tile_w, (index // cols) * (tile_h + label_h)
         sheet.paste(canvas, (x, y))
-        label = f"F{index + 1} | frame {rep['frame_id']} | {float(rep['pts_time']):.2f}s"
+        fps = max(1e-6, (int(scene["end_frame_exclusive"]) - int(scene["start_frame"]))
+                  / max(1e-6, float(scene["end_time"]) - float(scene["start_time"])))
+        pts_time = float(scene["start_time"]) + (int(frame_id) - int(scene["start_frame"])) / fps
+        label = f"F{index + 1} | frame {frame_id} | {pts_time:.2f}s"
         draw.text((x + 6, y + tile_h + 7), label, fill="black", font=font)
     output.parent.mkdir(parents=True, exist_ok=True)
     sheet.save(output, "JPEG", quality=82, optimize=True)
@@ -131,13 +138,15 @@ def prepare(args: argparse.Namespace) -> None:
     out_dir = BATCH_ROOT / args.video_id
     sheets = out_dir / "contact_sheets"
     jsonl = out_dir / "requests.jsonl"
-    ids = {int(rep["frame_id"]) for scene in scenes for rep in scene["representative_frames"]}
+    evidence = {str(scene["scene_id"]): adaptive_frame_ids(scene) for scene in scenes}
+    ids = {frame_id for values in evidence.values() for frame_id in values}
     decoded = extract_frames(video_path(args.video_id), ids)
     lines: list[str] = []
     for scene_index, scene in enumerate(scenes):
         scene_id = str(scene["scene_id"])
         image_path = sheets / f"scene_{scene_index:05d}.jpg"
-        contact_sheet(scene, decoded, image_path)
+        scene_ids = evidence[scene_id]
+        contact_sheet(scene, decoded, image_path, scene_ids)
         encoded = base64.b64encode(image_path.read_bytes()).decode("ascii")
         request = {
             "contents": [{"role": "user", "parts": [

@@ -43,7 +43,7 @@ Shot + Final Keyframes + ASR
 [9] Semantic Scene Merging                           ĐÃ BUILD
       |
       v
-[10] Contact Sheet + Gemini Batch JSONL              ĐÃ BUILD
+[10] Adaptive 8-25-frame Contact Sheet + Gemini Batch JSONL  ĐÃ BUILD + SMOKE TEST
       |
       v
 [11] Gemini OCR/Caption/Structured Metadata          ĐÃ BUILD + SUBSET20 VERIFIED
@@ -94,7 +94,7 @@ Video
 Technical shots + visual similarity + ASR context
   -> Gộp các shot liên tiếp
   -> Semantic scenes, tối đa 45 giây mỗi scene
-  -> Chọn tối đa 6 representative frames cho Gemini
+  -> Chọn thích nghi 8-25 evidence frames theo độ dài và số shot; luôn giữ representative frames
 ```
 
 ## 4. Gemini enrichment
@@ -306,6 +306,8 @@ Cấu hình production được chọn theo task thay vì bật mọi nhánh cù
 | Sampled-frame embedding | SigLIP2 Base 224 | Đã build |
 | Final image embedding | SigLIP2 SO400M 384 | Đã build |
 | Independent visual ensemble | OpenCLIP ViT-L/14 LAION-2B | Đã build, tự bật cho KIS |
+| Independent text-first retriever | Gemini Embedding 768-d | Đã build/index subset20; tự bật cho KIS |
+| Vietnamese-English query expansion | Gemini Flash Lite, cache SQLite | Đã build; bản dịch, visual paraphrase và keyword dùng cho KIS |
 | ASR | Whisper large-v3 | Đã build |
 | OCR/caption/entities | Gemini Batch | Generator đã build, chưa chạy toàn dataset |
 | Full-resolution OCR | PP-OCRv6 + conditional Gemini crops | Đã build và smoke test |

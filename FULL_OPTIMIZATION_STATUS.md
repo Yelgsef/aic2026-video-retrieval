@@ -17,6 +17,12 @@ Ngày: 2026-08-11
 - Giao diện web cục bộ cho KIS, QA và TRAKE.
 - Subset 20 đã hoàn tất 220/220 scheduler jobs và toàn bộ Gemini scene/OCR/ASR.
 - Offline index subset 20: 1.088 scene, 5.897 frame, SigLIP2 + OpenCLIP + BGE-M3.
+- Independent Gemini text index: 1.088 x 768 vectors. Query service cache bản dịch Việt-Anh,
+  visual paraphrase, English keywords và query embedding trong SQLite.
+- KIS benchmark sau text-first + query expansion: MRR 0,1248; R@1 6,90%; R@5 16,09%;
+  R@20 34,48%; R@100 77,01%. Nhánh này chỉ bật cho KIS vì thử nghiệm QA làm giảm R@5/R@10/R@100.
+- Gemini scene evidence đã đổi từ số frame cố định sang ngân sách 8-25 theo duration/shot count.
+  Smoke test L24_V012 tạo 4 scene/65 frame; chưa submit lại batch toàn corpus.
 - OpenCLIP index có key sidecar và incremental reuse; chạy lại reuse 5.897/5.897,
   decode 0 frame.
 - Validation silver đa video: 60 query, 3 scene/video trên đủ 20 video.
