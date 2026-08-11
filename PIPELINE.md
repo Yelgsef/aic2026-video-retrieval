@@ -415,6 +415,15 @@ Riêng KIS có MRR = 0,6562 và Recall@5 = 0,8158; QA retrieval có MRR = 0,4972
 và Recall@5 = 0,6667. Đây vẫn là pseudo-label tập trung vào một video, chưa
 thay thế strong validation đa video.
 
+Một benchmark object-grounded độc lập khác gồm 90 KIS, 40 QA và 20 TRAKE đã
+được chạy; nhãn tự ghi `AI pseudo-label` và `verified=false`. Sau khi loại video
+chưa có trong subset20, KIS đạt MRR 0,0893/R@10 0,1954; QA retrieval đạt MRR
+0,0741/R@10 0,1667; QA end-to-end joint 0; TRAKE video accuracy 0,10 và event
+hit 0. Stride-5 TRAKE vẫn phủ 60/60 event ranges, nên thất bại chính là semantic
+video/scene retrieval cho mô tả object-count-position, không phải thiếu sampled
+frame. Bộ này được giữ làm hard-negative validation để phát triển spatial/object
+indexing, chưa phải strong human-verified benchmark.
+
 QA end-to-end trên 12 pseudo-query: frame hit = 0,4167; answer match = 0,5833;
 joint accuracy = 0,3333; latency trung bình = 8,534 giây. TRAKE end-to-end trên
 10 query ba sự kiện: chọn đúng video = 1,00; thứ tự frame tăng đúng = 1,00;

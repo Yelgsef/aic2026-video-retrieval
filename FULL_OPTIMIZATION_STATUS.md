@@ -86,6 +86,15 @@ Mở `http://127.0.0.1:8765/`.
 
 Đây là pseudo/silver benchmark, chưa phải strong human-verified benchmark.
 
+Benchmark nhãn object-grounded bên ngoài (90 KIS, 40 QA, 20 TRAKE; tất cả vẫn
+`verified=false`) cho thấy một miền hard-negative mới. Trên subset20, KIS 87
+query đạt MRR 0,0893/R@10 19,54%; QA retrieval 36 query đạt MRR 0,0741/R@10
+16,67%. QA end-to-end công bằng trên 36 query: frame hit 2,78%, semantic answer
+5,56%, joint 0%, latency 26,22 giây. TRAKE 20 chuỗi: video accuracy 10%, event
+hit/full-sequence 0%, dù stride-5 feature phủ đủ 60/60 ground-truth event
+ranges. Pipeline hiện yếu rõ rệt với count + spatial relation + object-only
+descriptions; không được dùng bộ này để tuyên bố production quality.
+
 QA reasoning v4 phân loại câu hỏi thành color/OCR/count/object/spatial/motion/
 general. Motion dùng năm frame theo thứ tự thời gian; object, OCR và color mới
 kích hoạt crop, đồng thời giữ thêm crop rộng để không mất quan hệ chủ thể-vật
