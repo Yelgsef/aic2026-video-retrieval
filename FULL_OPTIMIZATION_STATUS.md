@@ -80,6 +80,9 @@ Mở `http://127.0.0.1:8765/`.
   Ablation mới xác nhận cửa sổ 2 giây tốt hơn cửa sổ 1 giây, multi-scale
   1/2/4 giây và global-fallback weight 0,20; ba biến thể sau đều chỉ đạt
   event hit 80% và full-sequence 60%, nên không được bật production.
+  X-CLIP Base/Patch32 8-frame candidate reranker cũng đã được triển khai và đo:
+  event hit 76,7%, full-sequence 50%, latency 12,64 giây/chuỗi. Kết quả thấp hơn
+  baseline 2 giây nên X-CLIP chỉ giữ làm ablation, không bật trong service.
 
 Đây là pseudo/silver benchmark, chưa phải strong human-verified benchmark.
 

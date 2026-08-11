@@ -12,6 +12,7 @@ sys.path.insert(0, str(ROOT))
 
 from aic_pipeline.offline_search_engine import OfflineSearchEngine
 from aic_pipeline.temporal_alignment import TemporalAligner
+from aic_pipeline.xclip_reranker import XClipWindowReranker
 
 
 def choose_video(engine: OfflineSearchEngine, events: list[str],
@@ -49,6 +50,7 @@ def main() -> None:
     parser.add_argument("--labels", type=Path, default=ROOT / "workspace/validation/trake_pseudolabels_subset10.jsonl")
     parser.add_argument("--index", type=Path, default=ROOT / "workspace/offline_index_subset10")
     parser.add_argument("--output", type=Path, default=ROOT / "workspace/validation/trake_end_to_end_subset10.json")
+    parser.add_argument("--limit", type=int, help="Evaluate only the first N labels for smoke tests")
     parser.add_argument("--decoder", choices=("dense", "windowed"), default="windowed")
     parser.add_argument("--fusion-mode", choices=("rrf", "normalized"), default="rrf")
     parser.add_argument("--field-aware", action="store_true")
@@ -58,14 +60,19 @@ def main() -> None:
                         help="Optional multi-scale short-clip windows in seconds")
     parser.add_argument("--motion-rerank", action="store_true")
     parser.add_argument("--global-peak-weight", type=float, default=0.35)
+    parser.add_argument("--xclip", action="store_true")
+    parser.add_argument("--xclip-weight", type=float, default=0.25)
     parser.add_argument("--openclip", action=argparse.BooleanOptionalAction, default=False)
     parser.add_argument("--visual-pooling", choices=("max", "top3_mean", "max_top3"), default="max")
     parser.add_argument("--calibrate-openclip", action=argparse.BooleanOptionalAction, default=False)
     parser.add_argument("--reranker-fusion", choices=("rank", "score", "hybrid", "auto"), default="rank")
     args = parser.parse_args()
     labels = [json.loads(x) for x in args.labels.read_text(encoding="utf-8").splitlines() if x.strip()]
+    if args.limit is not None:
+        labels = labels[:args.limit]
     engine = OfflineSearchEngine(ROOT, args.index)
     aligner = TemporalAligner(ROOT)
+    xclip = XClipWindowReranker(ROOT) if args.xclip else None
     rows = []
     for label in labels:
         started = time.perf_counter()
@@ -73,6 +80,8 @@ def main() -> None:
         selected_video, candidates, windows = choose_video(
             engine, events, args.fusion_mode, args.field_aware, args.openclip, args.visual_pooling,
             args.calibrate_openclip, args.reranker_fusion)
+        if xclip is not None:
+            windows = xclip.rerank(selected_video, events, windows, weight=args.xclip_weight)
         alignment = aligner.align(selected_video, events, windows, decoder=args.decoder,
                                   short_clip=args.short_clip, clip_seconds=args.clip_seconds,
                                   motion_rerank=args.motion_rerank,
@@ -96,6 +105,7 @@ def main() -> None:
               "clip_scales": args.clip_scales if args.short_clip else None,
               "motion_rerank": args.motion_rerank,
               "global_peak_weight": args.global_peak_weight,
+              "xclip": args.xclip, "xclip_weight": args.xclip_weight if args.xclip else None,
               "openclip": args.openclip, "visual_pooling": args.visual_pooling,
               "calibrate_openclip": args.calibrate_openclip,
               "reranker_fusion": args.reranker_fusion,
