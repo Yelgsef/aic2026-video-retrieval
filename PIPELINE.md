@@ -432,6 +432,15 @@ trái/giữa/phải/trên/dưới. Trên hard labels, KIS MRR tăng 0,0893 -> 0,
 QA R@10 tăng 0,1667 -> 0,2222. TRAKE dùng thêm object score ở bước chọn video
 với weight 0,9, tăng video accuracy 0,10 -> 0,25 nhưng full-sequence vẫn 0.
 
+Ranking/fusion tuning dùng cache top-150 gồm SigLIP2, OpenCLIP, BGE-M3,
+lexical, field coverage, structured object và reranker scores. Trọng số được
+chọn bằng grouped cross-validation theo video, không chia ngẫu nhiên query.
+Các profile KIS-count/spatial không qua gate nên production không đổi. QA-count
+profile qua CV và chỉ được phép rerank top-150: live MRR tăng 0,0810 -> 0,0900,
+R@1 tăng 0,0278 -> 0,0556, R@5 giữ 0,1389 và R@100 tăng 0,50 -> 0,6111; R@10
+giảm nhẹ 0,2222 -> 0,1944. Khi strong labels mới có sẵn, chỉ cần rebuild cache
+hoặc chạy optimizer lại, không cần embed lại video.
+
 QA end-to-end trên 12 pseudo-query: frame hit = 0,4167; answer match = 0,5833;
 joint accuracy = 0,3333; latency trung bình = 8,534 giây. TRAKE end-to-end trên
 10 query ba sự kiện: chọn đúng video = 1,00; thứ tự frame tăng đúng = 1,00;

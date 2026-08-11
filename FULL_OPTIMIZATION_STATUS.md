@@ -104,6 +104,13 @@ TRAKE object video fusion weight 0,9 tăng video accuracy 10% -> 25%, nhưng
 event hit chỉ 3,33% và full-sequence vẫn 0%; scene alignment object-only vẫn
 là điểm yếu chưa giải quyết.
 
+Fusion optimizer hiện cache bảy component scores và dùng 5-fold validation
+theo `video_id`. KIS-count và spatial profiles bị từ chối vì giảm R@100 hoặc
+CV MRR. Chỉ QA-count được bật, và chỉ rerank trong top-150 candidate cũ. Live
+benchmark: MRR 0,0810 -> 0,0900, R@1 2,78% -> 5,56%, R@5 giữ 13,89%, R@100
+50% -> 61,11%; R@10 giảm nhẹ 22,22% -> 19,44%. Candidate ngoài top-150 giữ
+nguyên thứ tự để không phá recall.
+
 QA reasoning v4 phân loại câu hỏi thành color/OCR/count/object/spatial/motion/
 general. Motion dùng năm frame theo thứ tự thời gian; object, OCR và color mới
 kích hoạt crop, đồng thời giữ thêm crop rộng để không mất quan hệ chủ thể-vật

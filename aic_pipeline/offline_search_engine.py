@@ -19,6 +19,7 @@ from transformers import AutoModel, AutoModelForSequenceClassification, AutoProc
 
 from .query_understanding import build_query_plan
 from .object_spatial import structured_object_scores
+from .fusion_profiles import accepted_profile
 from .retrieval_fusion import aggregate_scene_scores, field_coverage, robust_unit
 from .submission import build_ranked_submissions
 from .task_router import route_query
@@ -257,7 +258,31 @@ class OfflineSearchEngine:
                     fused[row] += score_delta
                 else:
                     fused[row] += 0.5 * (rank_delta + score_delta)
-            ranked = sorted(fused, key=fused.get, reverse=True)[:min(top_k, len(fused))]
+            profile = accepted_profile(task.task, plan.normalized, plan.intent)
+            profile_scores: dict[int, float] = {}
+            if profile and fused:
+                # Preserve candidate-generation recall. Learned/profile fusion
+                # may only reorder the bounded top pool used during validation.
+                base_order = sorted(fused, key=fused.get, reverse=True)
+                profile_rows = base_order[:150]
+                raw_features = {
+                    "visual": np.asarray([visual[row] for row in profile_rows], dtype=np.float32),
+                    "openclip": np.asarray([(openclip_scores[row] if openclip_scores is not None else 0.0)
+                                            for row in profile_rows], dtype=np.float32),
+                    "semantic": np.asarray([semantic[row] for row in profile_rows], dtype=np.float32),
+                    "lexical": np.asarray([rapid[row] for row in profile_rows], dtype=np.float32),
+                    "coverage": np.asarray([coverage_scores.get(row, 0.0) for row in profile_rows], dtype=np.float32),
+                    "object": np.asarray([object_scores[row] for row in profile_rows], dtype=np.float32),
+                    "reranker": np.asarray([reranker_scores.get(row, 0.0) for row in profile_rows], dtype=np.float32),
+                }
+                units = {name: robust_unit(values) for name, values in raw_features.items()}
+                for position, row in enumerate(profile_rows):
+                    profile_scores[row] = sum(profile.weights[name] * float(units[name][position])
+                                              for name in profile.weights)
+                profile_order = sorted(profile_rows, key=profile_scores.get, reverse=True)
+                ranked = (profile_order + base_order[len(profile_rows):])[:min(top_k, len(fused))]
+            else:
+                ranked = sorted(fused, key=fused.get, reverse=True)[:min(top_k, len(fused))]
             results = []
             for rank, row_id in enumerate(ranked, 1):
                 row = self.scenes.iloc[row_id]
@@ -267,6 +292,7 @@ class OfflineSearchEngine:
                                                    if openclip_scores is not None else None),
                                 "object_spatial_score": (float(object_scores[row_id])
                                                          if object_constraints else None),
+                                "profile_score": profile_scores.get(row_id),
                                 "semantic_field_scores": {name: float(values[row_id])
                                                           for name, values in semantic_fields.items()},
                                 "field_coverage_score": coverage_scores.get(row_id),
@@ -287,6 +313,7 @@ class OfflineSearchEngine:
                     "visual_pooling": visual_pooling,
                     "calibrate_openclip": calibrate_openclip, "reranker_fusion": resolved_reranker_fusion,
                     "object_constraints": object_constraints,
+                    "retrieval_profile": profile.kind if profile else None,
                     "reranker_used": use_reranker, "results": results, "submissions": submissions,
                     "requires_temporal_alignment": task.task == "TRAKE"}
 

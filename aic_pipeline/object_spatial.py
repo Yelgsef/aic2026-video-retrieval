@@ -15,7 +15,7 @@ LABEL_ALIASES = {
     "building": ("building", "toa nha"),
     "tree": ("tree", "plant", "cay", "cay xanh"),
     "flower": ("flower", "bong hoa", "hoa"),
-    "vehicle": ("vehicle", "phuong tien"),
+    "vehicle": ("vehicle", "phuong tien", "xe"),
     "car": ("car", "automobile", "xe o to", "o to", "xe hoi"),
     "motorcycle": ("motorcycle", "motorbike", "xe may"),
     "bicycle": ("bicycle", "bike", "xe dap"),
@@ -108,11 +108,12 @@ def object_spatial_text(metadata: dict[str, Any]) -> str:
 def parse_object_constraints(query: str) -> list[dict[str, Any]]:
     folded = fold_text(query)
     matches: list[tuple[int, int, str]] = []
-    for canonical, aliases in LABEL_ALIASES.items():
-        for alias in sorted((fold_text(value) for value in aliases), key=len, reverse=True):
-            for match in re.finditer(rf"(?<!\w){re.escape(alias)}(?!\w)", folded):
-                if not any(start <= match.start() < end for start, end, _ in matches):
-                    matches.append((match.start(), match.end(), canonical))
+    aliases = sorted(((fold_text(alias), canonical) for canonical, values in LABEL_ALIASES.items()
+                      for alias in values), key=lambda item: len(item[0]), reverse=True)
+    for alias, canonical in aliases:
+        for match in re.finditer(rf"(?<!\w){re.escape(alias)}(?!\w)", folded):
+            if not any(match.start() < end and match.end() > start for start, end, _ in matches):
+                matches.append((match.start(), match.end(), canonical))
     constraints = []
     for start, end, label in sorted(matches):
         context = folded[max(0, start - 24):min(len(folded), end + 32)]
