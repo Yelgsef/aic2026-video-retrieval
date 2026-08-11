@@ -34,6 +34,12 @@ def main() -> None:
     parser.add_argument("--query-id", action="append", default=[])
     parser.add_argument("--candidates", type=int, default=24)
     parser.add_argument("--accepted-ranges", type=Path)
+    parser.add_argument("--fusion-mode", choices=("rrf", "normalized"), default="normalized")
+    parser.add_argument("--field-aware", action=argparse.BooleanOptionalAction, default=True)
+    parser.add_argument("--openclip", action=argparse.BooleanOptionalAction, default=True)
+    parser.add_argument("--visual-pooling", choices=("max", "top3_mean", "max_top3"), default="max")
+    parser.add_argument("--calibrate-openclip", action=argparse.BooleanOptionalAction, default=False)
+    parser.add_argument("--reranker-fusion", choices=("rank", "score", "hybrid", "auto"), default="rank")
     args = parser.parse_args()
     labels = pd.read_csv(args.labels)
     labels = labels.loc[labels.query_type.eq("QA")]
@@ -54,7 +60,11 @@ def main() -> None:
         started = time.perf_counter()
         try:
             found = retrieval.search(qa_grounding_query(str(label.query_text_vi)),
-                                     top_k=max(30, args.candidates), rerank_k=30)
+                                     top_k=max(30, args.candidates), rerank_k=30,
+                                     fusion_mode=args.fusion_mode, field_aware=args.field_aware,
+                                     openclip=args.openclip, visual_pooling=args.visual_pooling,
+                                     calibrate_openclip=args.calibrate_openclip,
+                                     reranker_fusion=args.reranker_fusion)
             answer = qa.answer(str(label.query_text_vi), found["results"], args.candidates)
             expected = normalize(label.answer)
             actual = normalize(answer["answer"])
@@ -87,6 +97,10 @@ def main() -> None:
                                encoding="utf-8")
     count = len(rows)
     report = {"pseudo_labels": True, "count": count,
+              "retrieval_config": {"fusion_mode": args.fusion_mode, "field_aware": args.field_aware,
+                                   "openclip": args.openclip, "visual_pooling": args.visual_pooling,
+                                   "calibrate_openclip": args.calibrate_openclip,
+                                   "reranker_fusion": args.reranker_fusion},
               "completed": sum(r["status"] == "completed" for r in rows),
               "frame_hit_rate": sum(r["frame_hit"] for r in rows) / count,
               "answer_match_rate": sum(r["answer_match"] for r in rows) / count,

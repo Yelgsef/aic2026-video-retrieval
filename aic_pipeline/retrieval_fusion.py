@@ -38,6 +38,29 @@ def robust_unit(scores: np.ndarray) -> np.ndarray:
     return output
 
 
+def aggregate_scene_scores(frame_scores: np.ndarray, scene_rows: np.ndarray, scene_count: int,
+                           mode: str = "max") -> np.ndarray:
+    """Aggregate frame evidence without letting one accidental match dominate a scene."""
+    if mode not in {"max", "top3_mean", "max_top3"}:
+        raise ValueError("visual pooling must be max, top3_mean or max_top3")
+    grouped: list[list[float]] = [[] for _ in range(scene_count)]
+    for score, scene_row in zip(np.asarray(frame_scores), np.asarray(scene_rows)):
+        grouped[int(scene_row)].append(float(score))
+    output = np.full(scene_count, -np.inf, dtype=np.float32)
+    for scene_row, values in enumerate(grouped):
+        if not values:
+            continue
+        top = sorted(values, reverse=True)[:3]
+        maximum, mean_top = top[0], float(np.mean(top))
+        if mode == "max":
+            output[scene_row] = maximum
+        elif mode == "top3_mean":
+            output[scene_row] = mean_top
+        else:
+            output[scene_row] = 0.7 * maximum + 0.3 * mean_top
+    return output
+
+
 def field_coverage(query: str, row: Any, intent: str) -> tuple[float, dict[str, float]]:
     terms = content_terms(query)
     if not terms:

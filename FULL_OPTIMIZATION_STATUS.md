@@ -15,8 +15,15 @@ Ngày: 2026-08-11
 - Subset 20 video đa dạng, scheduler checkpoint/resume.
 - Motion-aware TRAKE reranker dạng candidate-only ablation.
 - Giao diện web cục bộ cho KIS, QA và TRAKE.
+- Subset 20 đã hoàn tất 220/220 scheduler jobs và toàn bộ Gemini scene/OCR/ASR.
+- Offline index subset 20: 1.088 scene, 5.897 frame, SigLIP2 + OpenCLIP + BGE-M3.
+- OpenCLIP index có key sidecar và incremental reuse; chạy lại reuse 5.897/5.897,
+  decode 0 frame.
+- Validation silver đa video: 60 query, 3 scene/video trên đủ 20 video.
+- Retrieval profile chuyên biệt theo task; CLI và HTTP service dùng chung
+  `OfflineSearchEngine`, không còn hai implementation khác nhau.
 
-## Scheduler đang chạy
+## Scheduler subset 20 đã hoàn tất
 
 Subset 20 gồm 3,45 giờ video, 2,47 GB. Log:
 
@@ -61,9 +68,19 @@ uv run --project environments/siglip2 python scripts/serve_offline_query.py --in
 
 Mở `http://127.0.0.1:8765/`.
 
+## Benchmark hiện tại
+
+- Multi-video baseline: MRR 0,574; R@1 41,7%; R@10 85,0%.
+- KIS quality candidate: R@10 tổng 93,3%; KIS MRR 0,555 -> 0,567.
+- QA broad-scene: frame hit 83,3%; answer match 58,3%; joint 58,3%; khoảng
+  20,1 giây/query vì hai Gemini passes và object grounding có điều kiện.
+- TRAKE cấu hình giữ lại: video accuracy 100%; event hit 90%; full-sequence
+  accuracy 70%; strictly increasing 100%; khoảng 4,83 giây/chuỗi.
+
+Đây là pseudo/silver benchmark, chưa phải strong human-verified benchmark.
+
 ## Điều kiện trước production
 
-- Chờ subset-20 hoàn tất.
 - Tạo strong labels có human verification.
 - Chỉ bật motion reranker nếu TRAKE ablation tăng điểm.
 - Re-run fusion selection trên strong labels.

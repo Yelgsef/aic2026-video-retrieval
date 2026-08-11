@@ -18,7 +18,7 @@ from rapidfuzz import fuzz
 from transformers import AutoModel, AutoModelForSequenceClassification, AutoProcessor, AutoTokenizer, CLIPModel
 
 from .query_understanding import build_query_plan
-from .retrieval_fusion import field_coverage, robust_unit
+from .retrieval_fusion import aggregate_scene_scores, field_coverage, robust_unit
 from .submission import build_ranked_submissions
 from .task_router import route_query
 
@@ -94,23 +94,25 @@ class OfflineSearchEngine:
                 f"SELECT rowid FROM {table} WHERE {table} MATCH ? ORDER BY bm25({table}) LIMIT ?",
                 (expression, limit))]
 
-    def _siglip_scores(self, variants: list[str]) -> tuple[np.ndarray, np.ndarray, list[list[int]]]:
+    def _siglip_scores(self, variants: list[str], pooling: str) -> tuple[np.ndarray, np.ndarray, list[list[int]]]:
         inputs = self.siglip_processor(text=variants, padding="max_length", truncation=True, max_length=64,
                                        return_tensors="pt").to(self.device)
         with torch.inference_mode():
             vectors = self.siglip.get_text_features(**inputs).float()
             vectors = torch.nn.functional.normalize(vectors, dim=-1).cpu().numpy()
         frame_scores = np.asarray((self.image_vectors @ vectors.T).max(axis=1), dtype=np.float32)
-        scores = np.full(len(self.scenes), -np.inf, dtype=np.float32)
+        scene_rows = self.frames.scene_row.to_numpy(dtype=np.int64)
+        scores = aggregate_scene_scores(frame_scores, scene_rows, len(self.scenes), pooling)
         best_frames = np.full(len(self.scenes), -1, dtype=np.int64)
+        best_frame_scores = np.full(len(self.scenes), -np.inf, dtype=np.float32)
         scene_candidates: list[list[tuple[float, int]]] = [[] for _ in range(len(self.scenes))]
         for frame_row, score in enumerate(frame_scores):
             scene_row = int(self.frames.iloc[frame_row].scene_row)
             frame_id = int(self.frames.iloc[frame_row].frame_id)
             scene_candidates[scene_row].append((float(score), frame_id))
-            if score > scores[scene_row]:
-                scores[scene_row] = score
+            if score > best_frame_scores[scene_row]:
                 best_frames[scene_row] = frame_id
+                best_frame_scores[scene_row] = score
         top_frames = []
         for candidates in scene_candidates:
             selected = []
@@ -133,7 +135,7 @@ class OfflineSearchEngine:
                   for name, values in self.field_text_vectors.items()}
         return primary, fields
 
-    def _openclip_scores(self, variants: list[str]) -> np.ndarray:
+    def _openclip_scores(self, variants: list[str], pooling: str) -> np.ndarray:
         if self.openclip_vectors is None:
             raise FileNotFoundError("OpenCLIP frame embeddings are not available")
         if self.openclip is None:
@@ -149,12 +151,8 @@ class OfflineSearchEngine:
             vectors = self.openclip.get_text_features(**inputs).float()
             vectors = torch.nn.functional.normalize(vectors, dim=-1).numpy()
         frame_scores = np.asarray((self.openclip_vectors @ vectors.T).max(axis=1), dtype=np.float32)
-        scene_scores = np.full(len(self.scenes), -np.inf, dtype=np.float32)
-        for frame_row, score in enumerate(frame_scores):
-            scene_row = int(self.frames.iloc[frame_row].scene_row)
-            if score > scene_scores[scene_row]:
-                scene_scores[scene_row] = score
-        return scene_scores
+        return aggregate_scene_scores(frame_scores, self.frames.scene_row.to_numpy(dtype=np.int64),
+                                      len(self.scenes), pooling)
 
     def _rerank(self, query: str, rows: list[int], batch_size: int) -> dict[int, float]:
         output: dict[int, float] = {}
@@ -171,16 +169,17 @@ class OfflineSearchEngine:
     def search(self, query: str, top_k: int = 100, candidate_k: int = 300,
                rerank_k: int = 30, rerank_batch_size: int = 4,
                fusion_mode: str = "rrf", field_aware: bool = False,
-               openclip: bool = False) -> dict[str, Any]:
+               openclip: bool = False, visual_pooling: str = "max",
+               calibrate_openclip: bool = False, reranker_fusion: str = "rank") -> dict[str, Any]:
         if not query.strip() or top_k <= 0:
             raise ValueError("query must be non-empty and top_k positive")
         with self.lock, torch.inference_mode():
             task = route_query(query)
             plan = build_query_plan(task.retrieval_query)
             weights = intent_weights(plan.intent)
-            visual, best_frames, top_frames = self._siglip_scores(list(plan.variants))
+            visual, best_frames, top_frames = self._siglip_scores(list(plan.variants), visual_pooling)
             semantic, semantic_fields = self._bge_scores(plan.normalized)
-            openclip_scores = self._openclip_scores(list(plan.variants)) if openclip else None
+            openclip_scores = self._openclip_scores(list(plan.variants), visual_pooling) if openclip else None
             if field_aware and semantic_fields:
                 if plan.intent == "asr" and "asr" in semantic_fields:
                     semantic = np.maximum(semantic, semantic_fields["asr"])
@@ -191,6 +190,10 @@ class OfflineSearchEngine:
                     semantic = np.maximum(semantic, 0.92 * semantic_fields.get("ocr_entities", semantic))
             if fusion_mode not in {"rrf", "normalized"}:
                 raise ValueError("fusion_mode must be rrf or normalized")
+            if reranker_fusion not in {"rank", "score", "hybrid", "auto"}:
+                raise ValueError("reranker_fusion must be rank, score, hybrid or auto")
+            resolved_reranker_fusion = ("rank" if task.task == "QA" else "hybrid") \
+                if reranker_fusion == "auto" else reranker_fusion
             lexical_query = plan.ocr_query if plan.intent == "ocr" and plan.ocr_query else plan.normalized
             orders = {
                 "visual": np.argsort(-visual)[:candidate_k].tolist(),
@@ -211,6 +214,7 @@ class OfflineSearchEngine:
             coverage_fields: dict[int, dict[str, float]] = {}
             if fusion_mode == "normalized":
                 visual_unit, semantic_unit = robust_unit(visual), robust_unit(semantic)
+                openclip_unit = robust_unit(openclip_scores) if openclip_scores is not None else None
                 for row in fused:
                     coverage, fields = field_coverage(plan.normalized, self.scenes.iloc[row], plan.intent)
                     coverage_scores[row], coverage_fields[row] = coverage, fields
@@ -219,12 +223,23 @@ class OfflineSearchEngine:
                     fused[row] += (0.006 * weights["visual"] * float(visual_unit[row])
                                    + 0.006 * weights["semantic"] * float(semantic_unit[row])
                                    + 0.010 * coverage)
+                    if calibrate_openclip and openclip_unit is not None:
+                        fused[row] += 0.006 * weights["openclip"] * float(openclip_unit[row])
             preliminary = sorted(fused, key=fused.get, reverse=True)[:rerank_k]
             has_visual_text = any(bool(str(self.scenes.iloc[row].visual_summary).strip()) for row in preliminary)
-            use_reranker = plan.intent != "visual" or has_visual_text
+            use_reranker = bool(preliminary) and (plan.intent != "visual" or has_visual_text)
             reranker_scores = self._rerank(plan.normalized, preliminary, rerank_batch_size) if use_reranker else {}
-            for rank, row in enumerate(sorted(reranker_scores, key=reranker_scores.get, reverse=True), 1):
-                fused[row] += weights["reranker"] / (60 + rank)
+            reranker_order = sorted(reranker_scores, key=reranker_scores.get, reverse=True)
+            reranker_unit = robust_unit(np.asarray([reranker_scores[row] for row in reranker_order], dtype=np.float32))
+            for rank, (row, unit_score) in enumerate(zip(reranker_order, reranker_unit), 1):
+                rank_delta = weights["reranker"] / (60 + rank)
+                score_delta = 0.020 * weights["reranker"] * float(unit_score)
+                if resolved_reranker_fusion == "rank":
+                    fused[row] += rank_delta
+                elif resolved_reranker_fusion == "score":
+                    fused[row] += score_delta
+                else:
+                    fused[row] += 0.5 * (rank_delta + score_delta)
             ranked = sorted(fused, key=fused.get, reverse=True)[:min(top_k, len(fused))]
             results = []
             for rank, row_id in enumerate(ranked, 1):
@@ -250,6 +265,8 @@ class OfflineSearchEngine:
             submissions = build_ranked_submissions(task.task, results, min(100, top_k)) if task.task != "TRAKE" else []
             return {"query": query, "task_plan": task.to_dict(), "query_plan": plan.to_dict(), "weights": weights,
                     "fusion_mode": fusion_mode, "field_aware": field_aware, "openclip_used": openclip,
+                    "visual_pooling": visual_pooling,
+                    "calibrate_openclip": calibrate_openclip, "reranker_fusion": resolved_reranker_fusion,
                     "reranker_used": use_reranker, "results": results, "submissions": submissions,
                     "requires_temporal_alignment": task.task == "TRAKE"}
 

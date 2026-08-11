@@ -46,8 +46,8 @@ Shot + Final Keyframes + ASR
 [10] Contact Sheet + Gemini Batch JSONL              ĐÃ BUILD
       |
       v
-[11] Gemini OCR/Caption/Structured Metadata          ĐÃ CHUẨN BỊ
-     Chưa submit toàn dataset
+[11] Gemini OCR/Caption/Structured Metadata          ĐÃ BUILD + SUBSET20 VERIFIED
+     Toàn bộ 20 video validation đã submit/parse; chưa chạy toàn dataset
       |
       v
 [12] Multi-Modal Semantic Fusion Engine              BASELINE ĐÃ BUILD
@@ -62,7 +62,7 @@ Shot + Final Keyframes + ASR
      coarse-to-fine + short-clip cho TRAKE
       |
       v
-[15] Query API + User Interface                      CHƯA BUILD
+[15] Query API + User Interface                      ĐÃ BUILD
 ```
 
 ## 2. Visual preprocessing và keyframe selection
@@ -209,7 +209,7 @@ Stage C - Vector-Fuzzy Fusion
   - intent-aware weighted Reciprocal Rank Fusion
   - exact OCR/entity match bonus
   - fuzzy-match score
-  - max keyframe score + top-N mean theo scene
+  - max keyframe score mặc định; top-3 mean/blend là ablation tùy chọn
   - temporal deduplication
   |
   v
@@ -235,6 +235,21 @@ Query hình ảnh sẽ ưu tiên SigLIP2. Query nhắc đến chữ hoặc biể
 trọng số OCR/FTS/Fuzzy. Query nhắc đến lời nói sẽ tăng trọng số ASR và BGE-M3.
 Các trọng số cuối cùng phải được chọn bằng validation set, không cố định theo
 cảm tính.
+
+### Profile đã khóa bằng benchmark ngày 2026-08-11
+
+- KIS: normalized fusion, field-aware BGE-M3, SigLIP2 + OpenCLIP, calibrated
+  OpenCLIP score và hybrid rank/score BGE reranker.
+- QA: normalized fusion, field-aware BGE-M3, SigLIP2 + OpenCLIP, reranker theo
+  rank; first pass phủ tối đa 24 scene, sau đó refine nhiều frame độ phân giải
+  gốc và Grounding DINO chỉ khi query có object phù hợp.
+- TRAKE: RRF + field-aware, không OpenCLIP, windowed temporal decoding và
+  short-clip 2 giây. OpenCLIP/calibrated profile làm event hit giảm nên đã loại.
+
+Benchmark silver đa video gồm 60 query trải đều 20 video trên 1.088 scene.
+Profile KIS tăng R@10 từ 85,0% lên 93,3%, nhưng MRR tổng gần như không đổi;
+do đó baseline rank fusion vẫn được giữ làm fallback. Các nhãn này do Gemini
+tạo và `human_verified=false`, không được gọi là leaderboard-equivalent.
 
 ## 7. Những gì hybrid baseline hiện đã làm
 

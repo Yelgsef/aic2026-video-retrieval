@@ -73,7 +73,9 @@ def main() -> None:
                     vqa_candidates = int(request.get("vqa_candidates", 24))
                     candidate_k = max(int(request.get("candidate_k", 30)), vqa_candidates)
                     retrieval = engine.search(qa_grounding_query(question), top_k=candidate_k,
-                                              rerank_k=int(request.get("rerank_k", 30)))
+                                              rerank_k=int(request.get("rerank_k", 30)),
+                                              fusion_mode="normalized", field_aware=True, openclip=True,
+                                              calibrate_openclip=False, reranker_fusion="rank")
                     if qa_engine[0] is None:
                         qa_engine[0] = GeminiQAEngine(ROOT)
                     answer = qa_engine[0].answer(question, retrieval["results"],
@@ -96,7 +98,9 @@ def main() -> None:
                     # Score every ordered event independently. A video must cover the
                     # whole sequence; one excellent match must not dominate missing events.
                     event_retrievals = [engine.search(event, top_k=100, rerank_k=30,
-                                                      field_aware=True)
+                                                      fusion_mode="rrf", field_aware=True,
+                                                      openclip=False, calibrate_openclip=False,
+                                                      reranker_fusion="rank")
                                         for event in task.events]
                     per_event = []
                     all_videos = set()
@@ -151,8 +155,12 @@ def main() -> None:
                 response = engine.search(query, top_k=int(request.get("top_k", 100)),
                                          candidate_k=int(request.get("candidate_k", 300)),
                                          rerank_k=int(request.get("rerank_k", 30)),
-                                         openclip=bool(request.get("openclip", task.task == "KIS")),
-                                         field_aware=bool(request.get("field_aware", False)))
+                                         fusion_mode=str(request.get("fusion_mode", "normalized")),
+                                         openclip=bool(request.get("openclip", True)),
+                                         field_aware=bool(request.get("field_aware", True)),
+                                         calibrate_openclip=bool(request.get(
+                                             "calibrate_openclip", task.task == "KIS")),
+                                         reranker_fusion=str(request.get("reranker_fusion", "auto")))
                 response["latency_seconds"] = time.perf_counter() - started_query
                 self.send_json(200, response)
             except (ValueError, KeyError, TypeError, json.JSONDecodeError) as exc:

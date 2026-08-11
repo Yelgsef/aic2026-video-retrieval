@@ -100,10 +100,11 @@ class GeminiQAEngine:
 
     def answer(self, question: str, retrieval_results: list[dict[str, Any]], maximum_candidates: int = 24) -> dict[str, Any]:
         candidates = []
-        # Cover more scenes while showing two temporal views per scene. A single
-        # pooled best frame often misses the small object asked about in QA.
-        for scene_rank, result in enumerate(retrieval_results[: max(1, maximum_candidates // 2)], start=1):
-            frame_ids = [int(value) for value in result.get("top_visual_frame_ids", [])[:2]]
+        # First pass maximizes scene recall: one strong frame from up to 24
+        # scenes. The second pass below expands only the selected scene to
+        # multiple full-resolution views and optional object crops.
+        for scene_rank, result in enumerate(retrieval_results[:maximum_candidates], start=1):
+            frame_ids = [int(value) for value in result.get("top_visual_frame_ids", [])[:1]]
             if not frame_ids:
                 frame_ids = [int(result["best_frame_id"])]
             for frame_id in frame_ids:

@@ -26,6 +26,9 @@ def main() -> None:
     parser.add_argument("--fusion-mode", choices=("rrf", "normalized"), default="rrf")
     parser.add_argument("--field-aware", action="store_true")
     parser.add_argument("--openclip", action="store_true")
+    parser.add_argument("--visual-pooling", choices=("max", "top3_mean", "max_top3"), default="max")
+    parser.add_argument("--calibrate-openclip", action="store_true")
+    parser.add_argument("--reranker-fusion", choices=("rank", "score", "hybrid", "auto"), default="rank")
     args = parser.parse_args()
     labels = pd.read_csv(args.labels)
     if args.limit:
@@ -36,7 +39,9 @@ def main() -> None:
         started = time.perf_counter()
         response = engine.search(str(label.query_text_vi), top_k=100, rerank_k=30,
                                  fusion_mode=args.fusion_mode, field_aware=args.field_aware,
-                                 openclip=args.openclip)
+                                 openclip=args.openclip, visual_pooling=args.visual_pooling,
+                                 calibrate_openclip=args.calibrate_openclip,
+                                 reranker_fusion=args.reranker_fusion)
         expected = int(str(label.scene_id).rsplit(":", 1)[-1])
         expected_key = (str(label.video_id), expected)
         returned = [(str(item["video_id"]), int(item["scene_index"])) for item in response["results"]]
@@ -46,6 +51,9 @@ def main() -> None:
         print(json.dumps(rows[-1], ensure_ascii=False), flush=True)
     report = {"pseudo_labels": True, "fusion_mode": args.fusion_mode, "field_aware": args.field_aware,
               "openclip": args.openclip,
+              "visual_pooling": args.visual_pooling,
+              "calibrate_openclip": args.calibrate_openclip,
+              "reranker_fusion": args.reranker_fusion,
               "count": len(rows), "mean_latency_seconds": sum(r["latency_seconds"] for r in rows) / len(rows),
               "mean_reciprocal_rank": sum(1 / r["rank"] if r["rank"] else 0 for r in rows) / len(rows),
               "recall_at_1": sum(r["rank"] == 1 for r in rows) / len(rows),

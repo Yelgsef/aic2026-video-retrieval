@@ -15,11 +15,17 @@ from aic_pipeline.temporal_alignment import TemporalAligner
 
 
 def choose_video(engine: OfflineSearchEngine, events: list[str],
-                 fusion_mode: str = "rrf", field_aware: bool = False) -> tuple[str, dict, list[list[dict]]]:
+                 fusion_mode: str = "rrf", field_aware: bool = False,
+                 openclip: bool = False, visual_pooling: str = "max",
+                 calibrate_openclip: bool = False,
+                 reranker_fusion: str = "rank") -> tuple[str, dict, list[list[dict]]]:
     per_event, event_results, videos = [], [], set()
     for event in events:
         result = engine.search(event, top_k=100, rerank_k=30, fusion_mode=fusion_mode,
-                               field_aware=field_aware)
+                               field_aware=field_aware, openclip=openclip,
+                               visual_pooling=visual_pooling,
+                               calibrate_openclip=calibrate_openclip,
+                               reranker_fusion=reranker_fusion)
         event_results.append(result["results"])
         scores = {}
         for row in result["results"]:
@@ -49,6 +55,10 @@ def main() -> None:
     parser.add_argument("--short-clip", action="store_true")
     parser.add_argument("--clip-seconds", type=float, default=2.0)
     parser.add_argument("--motion-rerank", action="store_true")
+    parser.add_argument("--openclip", action=argparse.BooleanOptionalAction, default=False)
+    parser.add_argument("--visual-pooling", choices=("max", "top3_mean", "max_top3"), default="max")
+    parser.add_argument("--calibrate-openclip", action=argparse.BooleanOptionalAction, default=False)
+    parser.add_argument("--reranker-fusion", choices=("rank", "score", "hybrid", "auto"), default="rank")
     args = parser.parse_args()
     labels = [json.loads(x) for x in args.labels.read_text(encoding="utf-8").splitlines() if x.strip()]
     engine = OfflineSearchEngine(ROOT, args.index)
@@ -57,7 +67,9 @@ def main() -> None:
     for label in labels:
         started = time.perf_counter()
         events = [x["description_vi"] for x in label["events"]]
-        selected_video, candidates, windows = choose_video(engine, events, args.fusion_mode, args.field_aware)
+        selected_video, candidates, windows = choose_video(
+            engine, events, args.fusion_mode, args.field_aware, args.openclip, args.visual_pooling,
+            args.calibrate_openclip, args.reranker_fusion)
         alignment = aligner.align(selected_video, events, windows, decoder=args.decoder,
                                   short_clip=args.short_clip, clip_seconds=args.clip_seconds,
                                   motion_rerank=args.motion_rerank)
@@ -77,6 +89,9 @@ def main() -> None:
               "field_aware": args.field_aware, "count": len(rows),
               "short_clip": args.short_clip, "clip_seconds": args.clip_seconds if args.short_clip else None,
               "motion_rerank": args.motion_rerank,
+              "openclip": args.openclip, "visual_pooling": args.visual_pooling,
+              "calibrate_openclip": args.calibrate_openclip,
+              "reranker_fusion": args.reranker_fusion,
               "video_accuracy": sum(r["video_hit"] for r in rows) / len(rows),
               "event_hit_rate": sum(sum(r["event_hits"]) for r in rows) / event_count,
               "sequence_accuracy": sum(r["all_events_hit"] for r in rows) / len(rows),
