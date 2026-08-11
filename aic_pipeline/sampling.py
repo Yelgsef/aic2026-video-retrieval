@@ -113,7 +113,19 @@ def build_video_sampling_manifest(
     if len(match) != 1:
         raise ValueError(f"Expected one video manifest row for {video_id}, got {len(match)}")
     video = match.iloc[0]
-    frame_count = int(video["frame_count"])
+    manifest_frame_count = int(video["frame_count"])
+    reported_decoded = shot_data.get("decoded_frame_count")
+    decoded_frame_count = int(reported_decoded if reported_decoded is not None else
+                              (ranges[-1][1] if ranges else manifest_frame_count))
+    if abs(decoded_frame_count - manifest_frame_count) > 1:
+        raise ValueError(
+            f"Decoded frame count {decoded_frame_count} differs from manifest "
+            f"frame count {manifest_frame_count} by more than one frame"
+        )
+    # Container metadata occasionally over-reports one trailing H.264 frame.
+    # OmniShotCut ranges describe frames that were actually decoded, so use
+    # that count rather than manufacturing an unreadable final frame.
+    frame_count = decoded_frame_count
     fps = float(video["fps"])
 
     rows: list[dict[str, Any]] = []
@@ -183,6 +195,8 @@ def build_video_sampling_manifest(
         "video_id": video_id,
         "source_shots": str(shot_json_path.resolve()),
         "frame_count": frame_count,
+        "manifest_frame_count": manifest_frame_count,
+        "decoded_frame_count": decoded_frame_count,
         "fps": fps,
         "shot_count": len(ranges),
         "stride": stride,
