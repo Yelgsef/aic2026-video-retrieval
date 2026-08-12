@@ -33,13 +33,18 @@ def main() -> None:
     parser.add_argument("--gemini-threshold", type=float, default=0.78)
     parser.add_argument("--max-gemini-crops", type=int, default=80)
     parser.add_argument("--limit-frames", type=int, default=0)
+    parser.add_argument("--frame-stride", type=int, default=0,
+                        help="OCR every Nth source frame instead of final keyframes")
+    parser.add_argument("--output-root", type=Path,
+                        help="Alternative output root for audits; defaults to workspace/ocr_fullres")
     parser.add_argument("--batch-size", type=int, default=16)
     parser.add_argument("--det-model", default="PP-OCRv6_small_det")
     parser.add_argument("--rec-model", default="PP-OCRv6_small_rec")
     parser.add_argument("--force", action="store_true")
     args = parser.parse_args()
 
-    output = ROOT / "workspace" / "ocr_fullres" / args.video_id
+    output_root = args.output_root or (ROOT / "workspace" / "ocr_fullres")
+    output = output_root / args.video_id
     result_path = output / "regions.parquet"
     if result_path.exists() and not args.force:
         report_path = output / "report.json"
@@ -52,9 +57,20 @@ def main() -> None:
     if len(match) != 1:
         raise ValueError(f"Expected one manifest row for {args.video_id}")
     video_path = Path(match.iloc[0].video_path)
-    index = ROOT / "workspace/retrieval/google_siglip2_so400m_patch14_384" / (
-        f"{args.video_id}_final_from_google_siglip2_base_patch16_224")
-    frames = pd.read_parquet(index / "metadata.parquet").sort_values("frame_id")
+    if args.frame_stride:
+        if args.frame_stride < 1:
+            raise ValueError("frame-stride must be positive")
+        capture = cv2.VideoCapture(str(video_path))
+        frame_count = int(capture.get(cv2.CAP_PROP_FRAME_COUNT))
+        fps = float(capture.get(cv2.CAP_PROP_FPS))
+        capture.release()
+        frame_ids = list(range(0, frame_count, args.frame_stride))
+        frames = pd.DataFrame({"frame_id": frame_ids,
+                               "pts_time": [value / fps for value in frame_ids]})
+    else:
+        index = ROOT / "workspace/retrieval/google_siglip2_so400m_patch14_384" / (
+            f"{args.video_id}_final_from_google_siglip2_base_patch16_224")
+        frames = pd.read_parquet(index / "metadata.parquet").sort_values("frame_id")
     source_frame_count = len(frames)
     if args.limit_frames:
         frames = frames.head(args.limit_frames)
@@ -122,6 +138,7 @@ def main() -> None:
     (output / "gemini_candidates.jsonl").write_text(
         "".join(json.dumps(x, ensure_ascii=False) + "\n" for x in selected), encoding="utf-8")
     report = {"video_id": args.video_id, "det_model": args.det_model, "rec_model": args.rec_model,
+              "frame_stride": args.frame_stride or None,
               "frames": len(frames), "source_frames": source_frame_count,
               "complete": len(frames) == source_frame_count, "regions": len(rows),
               "searchable_regions": sum(x["searchable"] for x in rows),

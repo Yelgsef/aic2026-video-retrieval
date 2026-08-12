@@ -152,14 +152,18 @@ def select_video_keyframes(
         raise ValueError("protected_anchor_policy must be 'none', 'core', or 'all'")
 
     core_anchor_names = {"shot_start", "shot_middle", "shot_end"}
+    coverage_anchors = mapping["sampling_reason"].map(
+        lambda value: any(reason.startswith("coverage_") for reason in str(value).split("|"))
+    )
     if protected_anchor_policy == "none":
-        mapping["is_protected_anchor"] = False
+        mapping["is_protected_anchor"] = coverage_anchors
     elif protected_anchor_policy == "all":
-        mapping["is_protected_anchor"] = mapping["is_mandatory"].astype(bool)
+        mapping["is_protected_anchor"] = mapping["is_mandatory"].astype(bool) | coverage_anchors
     else:
         mapping["is_protected_anchor"] = mapping["sampling_reason"].map(
             lambda value: bool(core_anchor_names.intersection(str(value).split("|")))
-        )
+        ) | coverage_anchors
+    mapping["is_coverage_anchor"] = coverage_anchors
 
     audit_parts: list[pd.DataFrame] = []
     selected_rows: set[int] = set()
@@ -307,11 +311,22 @@ def select_video_keyframes(
     audit = audit.reset_index(drop=True)
 
     selected = audit[audit["selected"]].sort_values("frame_id").copy()
+    expected_coverage_rows = set(
+        mapping.index[mapping["is_coverage_anchor"]].astype(int).tolist()
+    )
+    missing_coverage_rows = expected_coverage_rows - final_rows
+    if missing_coverage_rows:
+        missing_frames = mapping.loc[sorted(missing_coverage_rows), "frame_id"].astype(int).tolist()
+        raise RuntimeError(
+            "Keyframe selection removed hard coverage anchors at frames: "
+            f"{missing_frames[:20]}"
+        )
     selected.insert(0, "keyframe_row", np.arange(len(selected), dtype=np.int64))
     selected["selection_reasons"] = selected.apply(
         lambda row: "|".join(
             reason for reason, enabled in (
                 ("protected_anchor", bool(row["is_protected_anchor"])),
+                ("coverage_anchor", bool(row["is_coverage_anchor"])),
                 ("cluster_medoid", bool(row["is_cluster_medoid"])),
             ) if enabled
         ), axis=1
@@ -337,6 +352,8 @@ def select_video_keyframes(
         "cluster_medoids": len(medoid_rows),
         "sampled_mandatory_anchors": int(mapping["is_mandatory"].sum()),
         "protected_compact_anchors": int(mapping["is_protected_anchor"].sum()),
+        "coverage_anchors": len(expected_coverage_rows),
+        "coverage_anchors_retained": len(expected_coverage_rows - missing_coverage_rows),
         "union_candidates": len(selected_rows),
         "redundancy_removed": len(removed_to),
         "within_shot_redundancy_removed": len(removed_to) - len(adjacent_removed_to),

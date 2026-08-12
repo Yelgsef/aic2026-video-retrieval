@@ -55,7 +55,11 @@ def filter_ocr_lines(lines: list[dict[str, Any]], recurrence: Counter[str] | Non
         compact = re.sub(r"\s+", "", text)
         if TIME_OR_DATE.fullmatch(text):
             reason = "timestamp_or_date"
-        elif len(compact) <= 2 and not any(char.isalpha() for char in compact):
+        # Two- and three-digit tokens are often race bibs, jersey numbers, bus
+        # routes, or house numbers. They are highly discriminative retrieval
+        # terms and must survive; timestamps/dates were already rejected above.
+        elif (len(compact) <= 2 and not any(char.isalpha() for char in compact)
+              and not re.fullmatch(r"\d{2,3}", compact)):
             reason = "non_semantic_short_text"
         elif BOILERPLATE.search(text):
             reason = "channel_or_footer_boilerplate"

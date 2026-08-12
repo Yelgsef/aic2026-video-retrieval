@@ -29,12 +29,15 @@ def sample_shot(
     stride: int = 5,
     boundary_radius: int = 2,
     include_anchors: bool = True,
+    coverage_anchor_interval: int = 67,
 ) -> list[dict[str, Any]]:
     """Return sampled frame IDs for one half-open shot range [start, end)."""
     if stride <= 0:
         raise ValueError("stride must be positive")
     if boundary_radius < 0:
         raise ValueError("boundary_radius must be non-negative")
+    if coverage_anchor_interval < 0:
+        raise ValueError("coverage_anchor_interval must be non-negative")
     if start_frame < 0 or end_frame_exclusive <= start_frame:
         raise ValueError(
             f"Invalid shot range: [{start_frame}, {end_frame_exclusive})"
@@ -43,6 +46,14 @@ def sample_shot(
     reasons: dict[int, set[str]] = defaultdict(set)
     for frame_id in range(start_frame, end_frame_exclusive, stride):
         reasons[frame_id].add(f"stride_{stride}")
+
+    # Hard global coverage guarantee: every [k*N, (k+1)*N) window contributes
+    # its first frame. These anchors remain enabled even in stride-only mode.
+    if coverage_anchor_interval:
+        first_anchor = ((start_frame + coverage_anchor_interval - 1)
+                        // coverage_anchor_interval) * coverage_anchor_interval
+        for frame_id in range(first_anchor, end_frame_exclusive, coverage_anchor_interval):
+            reasons[frame_id].add(f"coverage_{coverage_anchor_interval}")
 
     if include_anchors:
         last_frame = end_frame_exclusive - 1
@@ -87,6 +98,7 @@ def build_video_sampling_manifest(
     stride: int = 5,
     boundary_radius: int = 2,
     include_anchors: bool = True,
+    coverage_anchor_interval: int = 67,
     force: bool = False,
 ) -> dict[str, Any]:
     started = time.time()
@@ -140,6 +152,7 @@ def build_video_sampling_manifest(
             stride=stride,
             boundary_radius=boundary_radius,
             include_anchors=include_anchors,
+            coverage_anchor_interval=coverage_anchor_interval,
         ):
             rows.append(
                 {
@@ -171,6 +184,12 @@ def build_video_sampling_manifest(
     ]
     missing_shots = set(range(len(ranges))) - set(samples["shot_id"].unique())
     final_end = int(ranges[-1][1]) if ranges else 0
+    expected_coverage_anchors = (
+        set(range(0, frame_count, coverage_anchor_interval))
+        if coverage_anchor_interval else set()
+    )
+    sampled_frame_ids = set(samples["frame_id"].astype(int))
+    missing_coverage_anchors = expected_coverage_anchors - sampled_frame_ids
 
     if len(invalid_ranges):
         raise ValueError(f"Found {len(invalid_ranges)} samples outside shot ranges")
@@ -178,6 +197,11 @@ def build_video_sampling_manifest(
         raise ValueError(f"Found {duplicate_frames} duplicate frame assignments")
     if missing_shots:
         raise ValueError(f"Shots without samples: {sorted(missing_shots)}")
+    if missing_coverage_anchors:
+        raise ValueError(
+            "Missing hard coverage anchors: "
+            f"{sorted(missing_coverage_anchors)[:20]}"
+        )
     if ranges and (int(ranges[0][0]) != 0 or final_end != frame_count):
         raise ValueError(
             f"Shot coverage [0, {final_end}) does not match frame count {frame_count}"
@@ -202,6 +226,9 @@ def build_video_sampling_manifest(
         "stride": stride,
         "boundary_radius": boundary_radius,
         "include_anchors": include_anchors,
+        "coverage_anchor_interval": coverage_anchor_interval,
+        "coverage_anchor_count": len(expected_coverage_anchors),
+        "missing_coverage_anchor_count": len(missing_coverage_anchors),
         "sample_count": len(samples),
         "mandatory_sample_count": int(samples["is_mandatory"].sum()),
         "sample_ratio": len(samples) / frame_count,
