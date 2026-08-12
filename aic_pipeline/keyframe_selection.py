@@ -126,6 +126,11 @@ def select_video_keyframes(
     adjacent_shot_cosine: float | None = None,
     global_within_shot_cosine: float | None = None,
     single_cluster_max_distance: float = 0.08,
+    temporal_chunk_frames: int = 67,
+    temporal_chunk_overlap: int = 10,
+    max_medoids_per_chunk: int = 2,
+    coverage_window_frames: int = 103,
+    evidence_manifest_path: Path | None = None,
     force: bool = False,
     report_output_path: Path | None = None,
 ) -> dict[str, Any]:
@@ -152,9 +157,18 @@ def select_video_keyframes(
         raise ValueError("protected_anchor_policy must be 'none', 'core', or 'all'")
 
     core_anchor_names = {"shot_start", "shot_middle", "shot_end"}
-    coverage_anchors = mapping["sampling_reason"].map(
-        lambda value: any(reason.startswith("coverage_") for reason in str(value).split("|"))
-    )
+    if temporal_chunk_frames <= 0:
+        raise ValueError("temporal_chunk_frames must be positive")
+    if not 0 <= temporal_chunk_overlap < temporal_chunk_frames:
+        raise ValueError("temporal_chunk_overlap must be in [0, temporal_chunk_frames)")
+    if max_medoids_per_chunk not in {1, 2}:
+        raise ValueError("max_medoids_per_chunk must be 1 or 2")
+    if coverage_window_frames < 0:
+        raise ValueError("coverage_window_frames must be non-negative")
+
+    # Legacy fixed coverage anchors are deliberately not protected. Coverage
+    # is now audited after redundancy and filled only for empty windows.
+    coverage_anchors = pd.Series(False, index=mapping.index)
     if protected_anchor_policy == "none":
         mapping["is_protected_anchor"] = coverage_anchors
     elif protected_anchor_policy == "all":
@@ -165,45 +179,71 @@ def select_video_keyframes(
         ) | coverage_anchors
     mapping["is_coverage_anchor"] = coverage_anchors
 
-    audit_parts: list[pd.DataFrame] = []
+    audit = mapping.copy()
+    audit["chunk_ids"] = ""
+    audit["chunk_k_max"] = 0
+    audit["chunk_silhouette_max"] = 0.0
+    chunk_memberships: dict[int, list[str]] = {int(row): [] for row in audit.index}
     selected_rows: set[int] = set()
     medoid_rows: set[int] = set()
     shot_stats: list[dict[str, Any]] = []
+    chunk_stats: list[dict[str, Any]] = []
+    chunk_step = temporal_chunk_frames - temporal_chunk_overlap
     for shot_id, shot in mapping.groupby("shot_id", sort=True):
-        positions = shot.index.to_numpy(dtype=np.int64)
-        shot_vectors = vectors[positions]
-        labels, centers, chosen_k, silhouette = _cluster_shot(
-            shot_vectors,
-            seed=int(shot_id) * 1009 + 17,
-            k_cap=k_cap,
-            single_cluster_max_distance=single_cluster_max_distance,
-        )
+        shot_positions = shot.index.to_numpy(dtype=np.int64)
         local_medoids: set[int] = set()
-        for cluster_id in range(chosen_k):
-            members = np.flatnonzero(labels == cluster_id)
-            if not len(members):
+        shot_start = int(shot["shot_start_frame"].iloc[0])
+        shot_end = int(shot["shot_end_frame_exclusive"].iloc[0])
+        chunk_index = 0
+        for chunk_start in range(shot_start, shot_end, chunk_step):
+            chunk_end = min(chunk_start + temporal_chunk_frames, shot_end)
+            chunk = shot[(shot.frame_id >= chunk_start) & (shot.frame_id < chunk_end)]
+            if chunk.empty:
                 continue
-            medoid_local = int(members[np.argmax(shot_vectors[members] @ centers[cluster_id])])
-            row = int(positions[medoid_local])
-            local_medoids.add(row)
-            medoid_rows.add(row)
+            positions = chunk.index.to_numpy(dtype=np.int64)
+            chunk_vectors = vectors[positions]
+            labels, centers, chosen_k, silhouette = _cluster_shot(
+                chunk_vectors, seed=int(shot_id) * 1009 + chunk_index * 97 + 17,
+                k_cap=max_medoids_per_chunk,
+                single_cluster_max_distance=single_cluster_max_distance,
+            )
+            chunk_id = f"{int(shot_id)}:{chunk_index}"
+            for row in positions:
+                chunk_memberships[int(row)].append(chunk_id)
+                audit.at[int(row), "chunk_k_max"] = max(
+                    int(audit.at[int(row), "chunk_k_max"]), chosen_k)
+                audit.at[int(row), "chunk_silhouette_max"] = max(
+                    float(audit.at[int(row), "chunk_silhouette_max"]), silhouette)
+            for cluster_id in range(chosen_k):
+                members = np.flatnonzero(labels == cluster_id)
+                if not len(members):
+                    continue
+                medoid_local = int(members[np.argmax(chunk_vectors[members] @ centers[cluster_id])])
+                row = int(positions[medoid_local])
+                local_medoids.add(row)
+                medoid_rows.add(row)
+            chunk_stats.append({"shot_id": int(shot_id), "chunk_id": chunk_id,
+                                "start_frame": chunk_start, "end_frame_exclusive": chunk_end,
+                                "samples": len(chunk), "k": chosen_k,
+                                "silhouette": silhouette})
+            chunk_index += 1
+            if chunk_end == shot_end:
+                break
         protected = set(
-            positions[shot["is_protected_anchor"].to_numpy(dtype=bool)].tolist()
+            shot_positions[shot["is_protected_anchor"].to_numpy(dtype=bool)].tolist()
         )
         candidates = protected | local_medoids
         selected_rows.update(candidates)
-        part = shot.copy()
-        part["cluster_id"] = labels
-        part["shot_k"] = chosen_k
-        part["shot_silhouette"] = silhouette
-        part["is_cluster_medoid"] = part.index.isin(local_medoids)
-        audit_parts.append(part)
         shot_stats.append(
-            {"shot_id": int(shot_id), "samples": len(shot), "k": chosen_k,
-             "silhouette": silhouette, "candidates": len(candidates)}
+            {"shot_id": int(shot_id), "samples": len(shot),
+             "chunks": chunk_index, "candidates": len(candidates)}
         )
 
-    audit = pd.concat(audit_parts).sort_index()
+    audit["chunk_ids"] = ["|".join(chunk_memberships[int(row)]) for row in audit.index]
+    # Compatibility aliases for downstream audit notebooks.
+    audit["shot_k"] = audit["chunk_k_max"]
+    audit["shot_silhouette"] = audit["chunk_silhouette_max"]
+    audit["is_cluster_medoid"] = audit.index.isin(medoid_rows)
     audit["selection_stage"] = np.where(
         audit.index.isin(medoid_rows), "cluster_medoid", "not_cluster_medoid"
     )
@@ -303,30 +343,62 @@ def select_video_keyframes(
                     removed_to[row] = representative
                     adjacent_removed_to[row] = representative
 
+    # Post-selection coverage: add one central sampled fallback only when an
+    # aligned global window has no retained frame.
+    coverage_fallback_rows: set[int] = set()
+    if coverage_window_frames:
+        video_end = int(mapping["shot_end_frame_exclusive"].max())
+        for window_start in range(0, video_end, coverage_window_frames):
+            window_end = min(window_start + coverage_window_frames, video_end)
+            if any(window_start <= int(audit.at[row, "frame_id"]) < window_end
+                   for row in final_rows):
+                continue
+            candidates = audit[(audit.frame_id >= window_start) & (audit.frame_id < window_end)]
+            if candidates.empty:
+                continue
+            center = (window_start + window_end - 1) / 2.0
+            row = int((candidates.frame_id.astype(float) - center).abs().idxmin())
+            final_rows.add(row)
+            coverage_fallback_rows.add(row)
+            removed_to.pop(row, None)
+
+    # Optional pre-filtered evidence manifest. Producers should mark only
+    # discriminative OCR/object novelty, not every common detection.
+    evidence_rows: set[int] = set()
+    if evidence_manifest_path is not None and evidence_manifest_path.exists():
+        evidence = pd.read_parquet(evidence_manifest_path)
+        if "frame_id" not in evidence:
+            raise ValueError("Evidence manifest must contain frame_id")
+        enabled = pd.Series(False, index=evidence.index)
+        for column in ("keep", "ocr_evidence", "object_evidence"):
+            if column in evidence:
+                enabled |= evidence[column].fillna(False).astype(bool)
+        wanted = set(evidence.loc[enabled, "frame_id"].astype(int))
+        evidence_rows = set(audit.index[audit.frame_id.astype(int).isin(wanted)].astype(int))
+        final_rows.update(evidence_rows)
+        for row in evidence_rows:
+            removed_to.pop(row, None)
+
     audit["selected"] = audit.index.isin(final_rows)
+    audit["is_coverage_fallback"] = audit.index.isin(coverage_fallback_rows)
+    audit["is_evidence_frame"] = audit.index.isin(evidence_rows)
     audit["redundant_to_embedding_row"] = pd.Series(removed_to, dtype="Int64")
     audit.loc[audit.index.isin(removed_to), "selection_stage"] = "redundancy_removed"
     audit.loc[audit.index.isin(adjacent_removed_to), "selection_stage"] = "adjacent_shot_removed"
     audit.loc[audit.index.isin(global_within_removed_to), "selection_stage"] = "global_within_shot_removed"
+    audit.loc[audit.index.isin(coverage_fallback_rows), "selection_stage"] = "coverage_fallback"
+    audit.loc[audit.index.isin(evidence_rows), "selection_stage"] = "ocr_object_evidence"
     audit = audit.reset_index(drop=True)
 
     selected = audit[audit["selected"]].sort_values("frame_id").copy()
-    expected_coverage_rows = set(
-        mapping.index[mapping["is_coverage_anchor"]].astype(int).tolist()
-    )
-    missing_coverage_rows = expected_coverage_rows - final_rows
-    if missing_coverage_rows:
-        missing_frames = mapping.loc[sorted(missing_coverage_rows), "frame_id"].astype(int).tolist()
-        raise RuntimeError(
-            "Keyframe selection removed hard coverage anchors at frames: "
-            f"{missing_frames[:20]}"
-        )
     selected.insert(0, "keyframe_row", np.arange(len(selected), dtype=np.int64))
     selected["selection_reasons"] = selected.apply(
         lambda row: "|".join(
             reason for reason, enabled in (
                 ("protected_anchor", bool(row["is_protected_anchor"])),
                 ("coverage_anchor", bool(row["is_coverage_anchor"])),
+                ("coverage_fallback", bool(row["is_coverage_fallback"])),
+                ("ocr_object_evidence", bool(row["is_evidence_frame"])),
                 ("cluster_medoid", bool(row["is_cluster_medoid"])),
             ) if enabled
         ), axis=1
@@ -344,7 +416,7 @@ def select_video_keyframes(
 
     shot_frame_counts = selected.groupby("shot_id").size()
     report = {
-        "pipeline_version": "0.1.0",
+        "pipeline_version": "0.2.0",
         "video_id": video_id,
         "encoder_id": encoder_id,
         "input_samples": len(mapping),
@@ -352,8 +424,9 @@ def select_video_keyframes(
         "cluster_medoids": len(medoid_rows),
         "sampled_mandatory_anchors": int(mapping["is_mandatory"].sum()),
         "protected_compact_anchors": int(mapping["is_protected_anchor"].sum()),
-        "coverage_anchors": len(expected_coverage_rows),
-        "coverage_anchors_retained": len(expected_coverage_rows - missing_coverage_rows),
+        "coverage_fallbacks": len(coverage_fallback_rows),
+        "evidence_frames": len(evidence_rows),
+        "temporal_chunks": len(chunk_stats),
         "union_candidates": len(selected_rows),
         "redundancy_removed": len(removed_to),
         "within_shot_redundancy_removed": len(removed_to) - len(adjacent_removed_to),
@@ -373,8 +446,13 @@ def select_video_keyframes(
             "adjacent_shot_cosine": adjacent_shot_cosine,
             "global_within_shot_cosine": global_within_shot_cosine,
             "single_cluster_max_distance": single_cluster_max_distance,
+            "temporal_chunk_frames": temporal_chunk_frames,
+            "temporal_chunk_overlap": temporal_chunk_overlap,
+            "max_medoids_per_chunk": max_medoids_per_chunk,
+            "coverage_window_frames": coverage_window_frames,
+            "evidence_manifest_path": str(evidence_manifest_path) if evidence_manifest_path else None,
         },
-        "k_distribution": dict(sorted(Counter(x["k"] for x in shot_stats).items())),
+        "k_distribution": dict(sorted(Counter(x["k"] for x in chunk_stats).items())),
         "elapsed_seconds": round(time.time() - started, 3),
         "outputs": {
             "selected_manifest": str(selected_path),

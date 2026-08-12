@@ -55,6 +55,9 @@ def classify_question(question: str) -> QAReasoningPlan:
     if any(term in folded for term in ("ghi chu", "ghi so", "bien so", "dong chu", "van ban", "tieu de")):
         return QAReasoningPlan("ocr", False, True, True,
                                "Read the exact visible characters from the clearest full-resolution crop.")
+    if any(term in folded for term in ("cay nao", "loai cay nao", "rau gi", "loai rau nao")):
+        return QAReasoningPlan("named_entity", False, False, True,
+                               "Return a plant name only when that name is visibly printed or present in supplied evidence; never infer a species from outside knowledge.")
     if any(term in folded for term in ("bao nhieu", "may nguoi", "may con", "so luong")):
         return QAReasoningPlan("count", False, True, False,
                                "Count only clearly visible instances; avoid counting the same object twice.")

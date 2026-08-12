@@ -22,7 +22,7 @@ def main() -> None:
     parser.add_argument("--shots", type=Path, default=None)
     parser.add_argument("--stride", type=int, default=5)
     parser.add_argument("--boundary-radius", type=int, default=2)
-    parser.add_argument("--coverage-anchor-interval", type=int, default=67,
+    parser.add_argument("--coverage-anchor-interval", type=int, default=0,
                         help="Hard-retain one global frame per N-frame window; 0 disables it.")
     parser.add_argument(
         "--stride-only", action="store_true",

@@ -19,6 +19,27 @@ ENGLISH_GLOSSES = {
     "studio": "television studio", "biển cảnh báo": "warning sign", "tạm dừng lưu thông": "road closed",
     "màn hình": "screen", "biển báo": "sign", "dòng chữ": "text", "màu đỏ": "red",
     "màu xanh": "blue", "đứng": "standing", "ngồi": "sitting", "nói": "speaking",
+    # AIC/VBS-specific visual and exact-text concepts. Longer phrases are
+    # replaced first, so e.g. "vận động viên xe đạp" is not split at "xe đạp".
+    "vận động viên xe đạp": "competitive cyclist", "người đi xe đạp": "cyclist",
+    "xe đạp": "bicycle", "cuộc đua xe đạp": "bicycle race",
+    "số áo": "bib number", "số hiệu": "identification number",
+    "biển số xe": "license plate", "biển số": "license plate",
+    "bảng điểm": "scoreboard", "đồng hồ thời gian": "race clock",
+    "đồng hồ": "clock", "phụ đề": "subtitle", "tin chạy": "news ticker",
+    "góc trên bên trái": "top left corner", "góc trên bên phải": "top right corner",
+    "góc dưới bên trái": "bottom left corner", "góc dưới bên phải": "bottom right corner",
+    "ở bên trái": "on the left", "ở bên phải": "on the right",
+    "phía trước": "in front of", "phía sau": "behind", "bên cạnh": "next to",
+    "đang cầm": "holding", "đang mặc": "wearing", "đội mũ": "wearing a hat",
+    "micro": "microphone", "điện thoại": "mobile phone", "máy tính": "computer",
+}
+
+OBJECT_GLOSSES = {
+    "người": "person", "vận động viên": "person", "xe đạp": "bicycle",
+    "xe máy": "motorcycle", "ô tô": "car", "xe buýt": "bus", "tàu": "boat",
+    "máy bay": "airplane", "điện thoại": "cell phone", "micro": "microphone",
+    "máy tính": "laptop", "chó": "dog", "mèo": "cat",
 }
 
 
@@ -32,11 +53,17 @@ class QueryPlan:
     asr_query: str
     entities: tuple[str, ...]
     variants: tuple[str, ...]
+    exact_terms: tuple[str, ...] = ()
+    objects: tuple[str, ...] = ()
+    answer_target: str = ""
+    transformer_used: bool = False
 
     def to_dict(self) -> dict:
         value = asdict(self)
         value["entities"] = list(self.entities)
         value["variants"] = list(self.variants)
+        value["exact_terms"] = list(self.exact_terms)
+        value["objects"] = list(self.objects)
         return value
 
 
@@ -84,5 +111,20 @@ def build_query_plan(query: str) -> QueryPlan:
         variants.append(english)
     if entities:
         variants.append(", ".join(ENGLISH_GLOSSES[value] for value in entities))
+    exact_terms = tuple(dict.fromkeys([
+        *quoted,
+        *uppercase,
+        *re.findall(r"(?<!\d)\d{2,4}(?!\d)", normalized),
+    ]))
+    objects = tuple(dict.fromkeys(english_name for vietnamese, english_name in OBJECT_GLOSSES.items()
+                                  if vietnamese in folded))
+    answer_target = ""
+    if any(value in folded for value in ("đồng hồ", "mấy giờ", "thời gian")):
+        answer_target = "clock_time"
+    elif any(value in folded for value in ("chữ gì", "ghi gì", "nội dung gì")):
+        answer_target = "visible_text"
+    elif "bao nhiêu" in folded:
+        answer_target = "count_or_number"
     return QueryPlan(query, normalized, intent, visual_query, ocr_query, asr_query,
-                     entities, tuple(dict.fromkeys(variants)))
+                     entities, tuple(dict.fromkeys(variants)), exact_terms, objects,
+                     answer_target, False)

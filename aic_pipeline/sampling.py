@@ -29,7 +29,7 @@ def sample_shot(
     stride: int = 5,
     boundary_radius: int = 2,
     include_anchors: bool = True,
-    coverage_anchor_interval: int = 67,
+    coverage_anchor_interval: int = 0,
 ) -> list[dict[str, Any]]:
     """Return sampled frame IDs for one half-open shot range [start, end)."""
     if stride <= 0:
@@ -98,7 +98,7 @@ def build_video_sampling_manifest(
     stride: int = 5,
     boundary_radius: int = 2,
     include_anchors: bool = True,
-    coverage_anchor_interval: int = 67,
+    coverage_anchor_interval: int = 0,
     force: bool = False,
 ) -> dict[str, Any]:
     started = time.time()

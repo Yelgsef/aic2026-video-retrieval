@@ -39,6 +39,11 @@ def main() -> None:
         "--single-cluster-max-distance", type=float, default=0.08,
         help="Use k=1 when mean cosine distance to the shot center is at most this value.",
     )
+    parser.add_argument("--temporal-chunk-frames", type=int, default=67)
+    parser.add_argument("--temporal-chunk-overlap", type=int, default=10)
+    parser.add_argument("--max-medoids-per-chunk", type=int, choices=(1, 2), default=2)
+    parser.add_argument("--coverage-window-frames", type=int, default=103)
+    parser.add_argument("--evidence-manifest", type=Path)
     parser.add_argument("--force", action="store_true")
     args = parser.parse_args()
     report = select_video_keyframes(
@@ -53,6 +58,11 @@ def main() -> None:
         adjacent_shot_cosine=args.adjacent_shot_cosine,
         global_within_shot_cosine=args.global_within_shot_cosine,
         single_cluster_max_distance=args.single_cluster_max_distance,
+        temporal_chunk_frames=args.temporal_chunk_frames,
+        temporal_chunk_overlap=args.temporal_chunk_overlap,
+        max_medoids_per_chunk=args.max_medoids_per_chunk,
+        coverage_window_frames=args.coverage_window_frames,
+        evidence_manifest_path=args.evidence_manifest,
         force=args.force,
     )
     print(json.dumps(report, ensure_ascii=False, indent=2))

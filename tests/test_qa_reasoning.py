@@ -9,6 +9,8 @@ def test_question_router_detects_specialized_reasoning() -> None:
     assert classify_question("Người phụ nữ đang cầm vật gì?").kind == "object"
     assert classify_question("Quai mũ có màu gì?").kind == "color"
     assert classify_question("Loài động vật nào đi cùng lực lượng đang di chuyển?").kind == "object"
+    assert classify_question("Cây nào ăn chua chua chát chát và trị được dạ dày?").kind == "named_entity"
+    assert classify_question("Đây là loại rau nào?").needs_exact_text
 
 
 def test_answer_equivalence_handles_vietnamese_synonyms() -> None:

@@ -56,6 +56,11 @@ def main() -> None:
     parser.add_argument("--adjacent-shot-cosine", type=float, default=0.995)
     parser.add_argument("--global-within-shot-cosine", type=float, default=0.995)
     parser.add_argument("--single-cluster-max-distance", type=float, default=0.01)
+    parser.add_argument("--temporal-chunk-frames", type=int, default=67)
+    parser.add_argument("--temporal-chunk-overlap", type=int, default=10)
+    parser.add_argument("--max-medoids-per-chunk", type=int, choices=(1, 2), default=2)
+    parser.add_argument("--coverage-window-frames", type=int, default=103)
+    parser.add_argument("--evidence-manifest", type=Path)
     args = parser.parse_args()
 
     samples_path = PROJECT_ROOT / "workspace" / "samples" / f"{args.video_id}.parquet"
@@ -185,6 +190,11 @@ def main() -> None:
             adjacent_shot_cosine=args.adjacent_shot_cosine,
             global_within_shot_cosine=args.global_within_shot_cosine,
             single_cluster_max_distance=args.single_cluster_max_distance,
+            temporal_chunk_frames=args.temporal_chunk_frames,
+            temporal_chunk_overlap=args.temporal_chunk_overlap,
+            max_medoids_per_chunk=args.max_medoids_per_chunk,
+            coverage_window_frames=args.coverage_window_frames,
+            evidence_manifest_path=args.evidence_manifest,
             force=args.force,
             report_output_path=PROJECT_ROOT / "workspace" / "reports" / f"keyframes_{encoder_id}_{args.video_id}.json",
         )

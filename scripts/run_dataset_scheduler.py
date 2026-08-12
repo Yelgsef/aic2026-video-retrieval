@@ -37,8 +37,13 @@ DEPENDENCY = {
 
 def configuration_hash() -> str:
     payload = {
-        "pipeline_version": "0.4.0",
+        "pipeline_version": "0.5.0",
         "sampling_stride": 5,
+        "sampling_fixed_coverage_anchor": 0,
+        "temporal_chunk_frames": 67,
+        "temporal_chunk_overlap": 10,
+        "max_medoids_per_chunk": 2,
+        "post_selection_coverage_window": 103,
         "visual_model": "google/siglip2-base-patch16-224",
         "visual_batch_size": 16,
         "rerank_model": "google/siglip2-so400m-patch14-384",
@@ -126,7 +131,13 @@ def artifact_valid(video_id: str, stage: str) -> bool:
             directory = ROOT / "workspace" / "retrieval" / "google_siglip2_base_patch16_224" / f"{video_id}_unified"
             vectors = np.load(directory / "embeddings.npy", mmap_mode="r")
             metadata = pd.read_parquet(directory / "metadata.parquet")
-            return len(vectors) == len(metadata) > 0 and metadata.shot_id.nunique() > 0
+            config = json.loads((directory / "config.json").read_text(encoding="utf-8"))
+            selection = config.get("selection", {})
+            return (len(vectors) == len(metadata) > 0 and metadata.shot_id.nunique() > 0
+                    and selection.get("temporal_chunk_frames") == 67
+                    and selection.get("temporal_chunk_overlap") == 10
+                    and selection.get("max_medoids_per_chunk") == 2
+                    and selection.get("coverage_window_frames") == 103)
         if stage == "siglip-so400m-final":
             directory = ROOT / "workspace" / "retrieval" / "google_siglip2_so400m_patch14_384" / f"{video_id}_final_from_google_siglip2_base_patch16_224"
             vectors = np.load(directory / "embeddings.npy", mmap_mode="r")
@@ -241,7 +252,7 @@ def command_for(video_id: str, stage: str) -> list[str]:
     checkpoint = ROOT / "models" / "omnishotcut" / "OmniShotCut_ckpt.pth"
     commands = {
         "omnishot": ["uv", "run", "--project", "environments/omnishotcut", "python", "scripts/run_omnishotcut.py", "--input", str(row.video_path), "--checkpoint", str(checkpoint), "--output", str(ROOT / "workspace" / "shots" / f"{video_id}.json"), "--force"],
-        "sampling": ["uv", "run", "--project", "environments/omnishotcut", "python", "scripts/build_sampling_manifest.py", "--video-id", video_id, "--stride", "5", "--stride-only", "--force"],
+        "sampling": ["uv", "run", "--project", "environments/omnishotcut", "python", "scripts/build_sampling_manifest.py", "--video-id", video_id, "--stride", "5", "--stride-only", "--coverage-anchor-interval", "0", "--force"],
         "siglip-base": ["uv", "run", "--project", "environments/siglip2", "python", "scripts/build_siglip2_sample_index.py", "--video-id", video_id, "--model-id", "google/siglip2-base-patch16-224", "--batch-size", "16", "--unified-select", "--force"],
         "siglip-so400m-final": ["uv", "run", "--project", "environments/siglip2", "python", "scripts/build_siglip2_final_index.py", "--video-id", video_id, "--source-encoder-id", "google_siglip2_base_patch16_224", "--model-id", "google/siglip2-so400m-patch14-384", "--batch-size", "8", "--force"],
         "asr-large-v3": ["uv", "run", "--project", "environments/asr", "python", "scripts/transcribe_faster_whisper.py", "--video-id", video_id, "--model", "large-v3", "--device", "cuda", "--compute-type", "float16", "--beam-size", "1", "--force"],

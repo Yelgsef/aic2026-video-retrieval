@@ -2,8 +2,10 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import sqlite3
 import threading
+import time
 import unicodedata
 from pathlib import Path
 from typing import Any
@@ -18,6 +20,7 @@ from rapidfuzz import fuzz
 from transformers import AutoModel, AutoModelForSequenceClassification, AutoProcessor, AutoTokenizer, CLIPModel
 
 from .query_understanding import build_query_plan
+from .query_transformer import LocalQueryTransformer
 from .object_spatial import structured_object_scores
 from .fusion_profiles import accepted_profile
 from .gemini_text_retrieval import GeminiTextServices
@@ -67,6 +70,8 @@ class OfflineSearchEngine:
         if self.gemini_text_vectors is not None and len(self.gemini_text_vectors) != len(self.scenes):
             raise ValueError("Gemini text metadata/vector count mismatch")
         self.gemini_text_services: GeminiTextServices | bool | None = None
+        self._exact_ocr_cache: dict[str, dict[int, int]] = {}
+        self.query_transformer = LocalQueryTransformer(self.root, self.index)
         self.field_text_vectors = {}
         for field in ("summary", "asr", "ocr_entities"):
             path = self.index / f"text_embeddings_bge_m3_{field}.npy"
@@ -104,6 +109,43 @@ class OfflineSearchEngine:
             return [int(row[0]) - 1 for row in connection.execute(
                 f"SELECT rowid FROM {table} WHERE {table} MATCH ? ORDER BY bm25({table}) LIMIT ?",
                 (expression, limit))]
+
+    def _exact_ocr_evidence(self, query: str, exact_terms: tuple[str, ...] = ()) -> dict[int, int]:
+        """Map scene rows to frames containing queried discriminative numbers."""
+        folded = unicodedata.normalize("NFKD", query.casefold()).replace("đ", "d")
+        folded = "".join(char for char in folded if not unicodedata.combining(char))
+        if not any(cue in folded for cue in ("so ao", "so hieu", "bien so", "ghi so")):
+            return {}
+        tokens = list(dict.fromkeys([
+            *re.findall(r"(?<!\d)\d{2,4}(?!\d)", query),
+            *(term for term in exact_terms if re.fullmatch(r"\d{2,4}", term)),
+        ]))
+        combined: dict[int, int] = {}
+        for token in tokens:
+            cached = self._exact_ocr_cache.get(token)
+            if cached is None:
+                cached = {}
+                for video_id in self.scenes.video_id.astype(str).unique():
+                    path = self.root / "workspace" / "ocr_fullres" / video_id / "regions.parquet"
+                    if not path.exists():
+                        continue
+                    regions = pd.read_parquet(path, columns=["frame_id", "text_raw", "confidence"])
+                    matches = regions[regions.text_raw.astype(str).str.fullmatch(
+                        re.escape(token), case=False, na=False)]
+                    if matches.empty:
+                        continue
+                    scene_rows = self.scenes[self.scenes.video_id.astype(str).eq(video_id)]
+                    for match in matches.sort_values("confidence", ascending=False).itertuples(index=False):
+                        frame_id = int(match.frame_id)
+                        containing = scene_rows[(scene_rows.start_frame <= frame_id)
+                                                & (scene_rows.end_frame_exclusive > frame_id)]
+                        if containing.empty:
+                            continue
+                        row = int(containing.index[0])
+                        cached.setdefault(row, frame_id)
+                self._exact_ocr_cache[token] = cached
+            combined.update(cached)
+        return combined
 
     def _siglip_scores(self, variants: list[str], pooling: str) -> tuple[np.ndarray, np.ndarray, list[list[int]]]:
         inputs = self.siglip_processor(text=variants, padding="max_length", truncation=True, max_length=64,
@@ -181,17 +223,30 @@ class OfflineSearchEngine:
                rerank_k: int = 30, rerank_batch_size: int = 4,
                fusion_mode: str = "rrf", field_aware: bool = False,
                openclip: bool = False, visual_pooling: str = "max",
-               calibrate_openclip: bool = False, reranker_fusion: str = "rank") -> dict[str, Any]:
+               calibrate_openclip: bool = False, reranker_fusion: str = "rank",
+               online_gemini_text: bool = False,
+               query_transformer: bool = True) -> dict[str, Any]:
         if not query.strip() or top_k <= 0:
             raise ValueError("query must be non-empty and top_k positive")
+        request_started = time.perf_counter()
         with self.lock, torch.inference_mode():
+            timings = {"lock_wait": time.perf_counter() - request_started}
+            stage_started = time.perf_counter()
             task = route_query(query)
             plan = build_query_plan(task.retrieval_query)
+            transformer_error = None
+            if query_transformer and self.query_transformer.available:
+                try:
+                    plan = self.query_transformer.enhance(plan)
+                except Exception as exc:
+                    transformer_error = f"{type(exc).__name__}: {exc}"
             weights = intent_weights(plan.intent)
+            timings["query_plan"] = time.perf_counter() - stage_started
             variants = list(plan.variants)
             expansion = None
             text_first_scores = None
-            if self.gemini_text_vectors is not None and task.task == "KIS":
+            stage_started = time.perf_counter()
+            if online_gemini_text and self.gemini_text_vectors is not None and task.task == "KIS":
                 try:
                     if self.gemini_text_services is None:
                         self.gemini_text_services = GeminiTextServices(self.root, self.index)
@@ -204,15 +259,27 @@ class OfflineSearchEngine:
                         text_first_scores = np.asarray(self.gemini_text_vectors @ query_vector, dtype=np.float32)
                 except Exception:
                     self.gemini_text_services = False
+            timings["gemini_text"] = time.perf_counter() - stage_started
             variants = list(dict.fromkeys(value.strip() for value in variants if value.strip()))
+            stage_started = time.perf_counter()
             visual, best_frames, top_frames = self._siglip_scores(variants, visual_pooling)
+            timings["siglip"] = time.perf_counter() - stage_started
+            stage_started = time.perf_counter()
             semantic, semantic_fields = self._bge_scores(plan.normalized)
+            timings["bge"] = time.perf_counter() - stage_started
+            stage_started = time.perf_counter()
             openclip_scores = self._openclip_scores(variants, visual_pooling) if openclip else None
+            timings["openclip"] = time.perf_counter() - stage_started
+            stage_started = time.perf_counter()
             if "object_spatial_json" in self.scenes:
                 object_scores, object_constraints = structured_object_scores(
                     plan.normalized, self.scenes.object_spatial_json.tolist())
             else:
                 object_scores, object_constraints = np.zeros(len(self.scenes), dtype=np.float32), []
+            exact_ocr_frames = self._exact_ocr_evidence(plan.normalized, plan.exact_terms)
+            for row, frame_id in exact_ocr_frames.items():
+                best_frames[row] = frame_id
+                top_frames[row] = [frame_id, *(value for value in top_frames[row] if value != frame_id)][:4]
             if field_aware and semantic_fields:
                 if plan.intent == "asr" and "asr" in semantic_fields:
                     semantic = np.maximum(semantic, semantic_fields["asr"])
@@ -234,6 +301,8 @@ class OfflineSearchEngine:
                 "lexical": self._fts(lexical_query, "scene_fts", candidate_k),
                 "fuzzy": self._fts(lexical_query, "fuzzy_fts", candidate_k),
             }
+            if exact_ocr_frames:
+                orders["exact_ocr"] = list(exact_ocr_frames)
             if openclip_scores is not None:
                 orders["openclip"] = np.argsort(-openclip_scores)[:candidate_k].tolist()
             if object_constraints:
@@ -247,7 +316,8 @@ class OfflineSearchEngine:
             fused: dict[int, float] = {}
             for branch, order in orders.items():
                 for rank, row in enumerate(order, 1):
-                    fused[row] = fused.get(row, 0.0) + weights[branch] / (60 + rank)
+                    branch_weight = 5.0 if branch == "exact_ocr" else weights[branch]
+                    fused[row] = fused.get(row, 0.0) + branch_weight / (60 + rank)
             rapid = {row: fuzz.WRatio(lexical_query, str(self.scenes.iloc[row].retrieval_text)) for row in fused}
             for rank, row in enumerate(sorted(rapid, key=rapid.get, reverse=True), 1):
                 fused[row] += weights["fuzzy"] / (60 + rank)
@@ -271,10 +341,16 @@ class OfflineSearchEngine:
                         fused[row] += 0.015 * weights["object"] * float(object_scores[row])
                     if text_first_unit is not None:
                         fused[row] += 0.008 * weights["text_first"] * float(text_first_unit[row])
+                    if row in exact_ocr_frames:
+                        fused[row] += 0.08
             preliminary = sorted(fused, key=fused.get, reverse=True)[:rerank_k]
+            timings["candidate_fusion"] = time.perf_counter() - stage_started
+            stage_started = time.perf_counter()
             has_visual_text = any(bool(str(self.scenes.iloc[row].visual_summary).strip()) for row in preliminary)
             use_reranker = bool(preliminary) and (plan.intent != "visual" or has_visual_text)
             reranker_scores = self._rerank(plan.normalized, preliminary, rerank_batch_size) if use_reranker else {}
+            timings["reranker"] = time.perf_counter() - stage_started
+            stage_started = time.perf_counter()
             reranker_order = sorted(reranker_scores, key=reranker_scores.get, reverse=True)
             reranker_unit = robust_unit(np.asarray([reranker_scores[row] for row in reranker_order], dtype=np.float32))
             for rank, (row, unit_score) in enumerate(zip(reranker_order, reranker_unit), 1):
@@ -335,16 +411,30 @@ class OfflineSearchEngine:
                                 "best_frame_id": int(best_frames[row_id]),
                                 "top_visual_frame_ids": top_frames[row_id],
                                 "representative_frame_ids": [int(value) for value in row.representative_frame_ids],
+                                "ocr_evidence": (json.loads(str(row.ocr_evidence_json))
+                                                 if "ocr_evidence_json" in self.scenes.columns
+                                                 and not pd.isna(row.ocr_evidence_json) else []),
+                                "ocr_text": ([str(value) for value in row.ocr_text]
+                                             if isinstance(row.ocr_text, (list, np.ndarray)) else []),
                                 "asr_text": "" if pd.isna(row.asr_text) else str(row.asr_text),
                                 "scene_context": str(row.retrieval_text)[:600]})
             submissions = build_ranked_submissions(task.task, results, min(100, top_k)) if task.task != "TRAKE" else []
+            timings["result_assembly"] = time.perf_counter() - stage_started
+            timings["total"] = time.perf_counter() - request_started
             return {"query": query, "task_plan": task.to_dict(), "query_plan": plan.to_dict(), "weights": weights,
                     "fusion_mode": fusion_mode, "field_aware": field_aware, "openclip_used": openclip,
                     "visual_pooling": visual_pooling,
                     "calibrate_openclip": calibrate_openclip, "reranker_fusion": resolved_reranker_fusion,
                     "object_constraints": object_constraints,
+                    "exact_ocr_evidence": [{"scene_row": row, "frame_id": frame}
+                                           for row, frame in exact_ocr_frames.items()],
                     "retrieval_profile": profile.kind if profile else None,
                     "query_expansion": expansion.model_dump() if expansion else None,
+                    "query_transformer_requested": query_transformer,
+                    "query_transformer_available": self.query_transformer.available,
+                    "query_transformer_error": transformer_error,
+                    "online_gemini_text": online_gemini_text,
+                    "timings": {name: round(value, 4) for name, value in timings.items()},
                     "reranker_used": use_reranker, "results": results, "submissions": submissions,
                     "requires_temporal_alignment": task.task == "TRAKE"}
 
@@ -355,4 +445,5 @@ class OfflineSearchEngine:
                 "semantic_fields": sorted(self.field_text_vectors),
                 "gemini_text_available": self.gemini_text_vectors is not None,
                 "openclip_available": self.openclip_vectors is not None,
+                "query_transformer_available": self.query_transformer.available,
                 "cuda_memory_allocated": int(torch.cuda.memory_allocated()) if self.device.type == "cuda" else 0}

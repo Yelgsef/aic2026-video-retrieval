@@ -1,11 +1,11 @@
-# Secrets
+# Secrets (commit only the placeholder template)
 .env
 .env.*
 !.env.example
 *.pem
 *.key
 
-# Python and local environments
+# Python caches and local virtual environments
 __pycache__/
 *.py[cod]
 .pytest_cache/
@@ -16,12 +16,12 @@ __pycache__/
 .pdf_tools/
 .ipynb_checkpoints/
 
-# AIC dataset, generated artifacts, and checkpoints
+# Dataset, generated indexes, reports and downloaded checkpoints
 archive/
 workspace/
 models/
 
-# Large media/model files
+# Large media and model artifacts
 *.mp4
 *.mkv
 *.avi
@@ -41,25 +41,15 @@ models/
 *.npz
 *.npy
 
-# Stages after BEiT-3 keyframe selection are intentionally not in the first milestone
-environments/asr/
-environments/siglip2/
-aic_pipeline/siglip_retrieval.py
-aic_pipeline/text_embeddings.py
-scripts/build_siglip2_index.py
-scripts/build_siglip2_sample_index.py
-scripts/query_siglip2.py
-scripts/evaluate_siglip2_retrieval.py
-scripts/evaluate_hybrid_retrieval.py
-scripts/evaluate_multiscale_retrieval.py
-scripts/build_object_text_index.py
-scripts/transcribe_faster_whisper.py
+# Third-party source is tracked through Git submodules
+third_party/*
 
-# Local tooling and generated notebooks
+# Local tools, generated notebooks and editor recovery files
 .claude/
 tools/
-third_party/*
 *.executed.ipynb
+*.vscode-backup
+*_recovered.ipynb
 
 # OS and editors
 .vscode/

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import re
 import sqlite3
 import unicodedata
 from pathlib import Path
@@ -47,6 +48,13 @@ def main() -> None:
             scenes = pd.read_parquet(scene_root / video_id / "scenes.parquet").sort_values("scene_index")
             document_path = ROOT / "workspace" / "scene_documents" / video_id / "scenes.parquet"
             documents = pd.read_parquet(document_path).set_index("document_id") if document_path.exists() else None
+            jsonl_path = ROOT / "workspace" / "scene_documents" / video_id / "scenes.jsonl"
+            document_json = {}
+            if jsonl_path.exists():
+                with jsonl_path.open("r", encoding="utf-8") as stream:
+                    for line in stream:
+                        payload = json.loads(line)
+                        document_json[str(payload["document_id"])] = payload
             index_dir = ROOT / "workspace" / "retrieval" / SO_ENCODER / f"{video_id}_final_from_{SOURCE_ENCODER}"
             metadata = pd.read_parquet(index_dir / "metadata.parquet").reset_index(drop=True)
             embeddings = np.load(index_dir / "embeddings.npy", mmap_mode="r")
@@ -54,6 +62,17 @@ def main() -> None:
                 raise ValueError("SO400M metadata/embedding row mismatch")
             for scene in scenes.itertuples(index=False):
                 document = documents.loc[str(scene.scene_id)] if documents is not None and str(scene.scene_id) in documents.index else None
+                representative_frame_ids = [int(value) for value in scene.representative_frame_ids]
+                ocr_evidence = []
+                raw_document = document_json.get(str(scene.scene_id), {})
+                for line in raw_document.get("ocr_lines", []):
+                    if not isinstance(line, dict):
+                        continue
+                    match = re.fullmatch(r"F(\d+)", str(line.get("frame_label", "")), flags=re.IGNORECASE)
+                    position = int(match.group(1)) - 1 if match else -1
+                    if 0 <= position < len(representative_frame_ids):
+                        ocr_evidence.append({"text": str(line.get("text", "")),
+                                             "frame_id": representative_frame_ids[position]})
                 mask = (metadata.frame_id >= int(scene.start_frame)) & (metadata.frame_id < int(scene.end_frame_exclusive))
                 positions = np.flatnonzero(mask.to_numpy())
                 if not len(positions):
@@ -76,7 +95,8 @@ def main() -> None:
                     "start_time": float(scene.start_time),
                     "end_time": float(scene.end_time),
                     "shot_count": int(scene.shot_count),
-                    "representative_frame_ids": [int(value) for value in scene.representative_frame_ids],
+                    "representative_frame_ids": representative_frame_ids,
+                    "ocr_evidence_json": json.dumps(ocr_evidence, ensure_ascii=False),
                     "visual_embedding_count": int(len(positions)),
                     "asr_text": str(document.asr_text if document is not None else scene.asr_exact or ""),
                     "asr_context": str(document.asr_context if document is not None else scene.asr_context or ""),

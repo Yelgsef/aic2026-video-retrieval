@@ -19,9 +19,24 @@ class TaskPlan:
 
 
 def split_events(query: str) -> tuple[str, ...]:
-    numbered = re.findall(r"(?:^|[;(]\s*)\d+[.)-]?\s*([^;()]+)", query)
-    if len(numbered) >= 2:
-        return tuple(" ".join(value.strip(" .,").split()) for value in numbered)
+    # Accept the formats commonly used by AIC queries: `(1) ...; (2) ...`,
+    # `1. ...\n2. ...`, and `E1: ...`. Slice between markers instead of
+    # matching event text with `[^;()]+`, because event descriptions may
+    # legitimately contain parentheses.
+    marker = re.compile(
+        r"(?:^|[;\n])\s*(?:\(\s*\d+\s*\)|E\s*\d+\s*:|\d+\s*[.):-])\s*",
+        flags=re.IGNORECASE,
+    )
+    matches = list(marker.finditer(query))
+    if len(matches) >= 2:
+        numbered = []
+        for index, match in enumerate(matches):
+            end = matches[index + 1].start() if index + 1 < len(matches) else len(query)
+            value = " ".join(query[match.end():end].strip(" ;.,").split())
+            if value:
+                numbered.append(value)
+        if len(numbered) >= 2:
+            return tuple(numbered)
     markers = re.split(r"\b(?:sau đó|tiếp theo|cuối cùng|rồi)\b", query, flags=re.IGNORECASE)
     return tuple(value.strip(" .,;:") for value in markers if value.strip()) if len(markers) >= 3 else ()
 

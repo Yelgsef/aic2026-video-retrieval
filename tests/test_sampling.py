@@ -41,3 +41,9 @@ def test_coverage_anchor_is_global_across_shot_boundaries() -> None:
     assert [row["frame_id"] for row in first] == [0]
     assert [row["frame_id"] for row in second] == [60, 67]
     assert "coverage_67" in second[-1]["sampling_reason"]
+
+
+def test_fixed_coverage_anchors_are_disabled_by_default() -> None:
+    rows = sample_shot(50, 150, stride=5, boundary_radius=0, include_anchors=False)
+
+    assert all("coverage_" not in row["sampling_reason"] for row in rows)
