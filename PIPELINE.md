@@ -131,6 +131,11 @@ visual similarity nhầm `126` thành `152`. API cũng có tầng dense short-cl
 refinement cho ablation (`moment_refinement=true`), nhưng mặc định tắt: benchmark
 hiện tại cho thấy embedding ảnh tĩnh chưa đủ ổn định để tự đếm “lần thứ hai”.
 
+KIS còn trả một Review Pack riêng gồm top 3 video, top scene theo từng video và
+tối đa 25 dense stride-5 frame mỗi scene. Frontend cho phép phát đoạn ở 0.25×/0.5×,
+dịch ±0.2 giây và chọn/copy exact frame. Review Pack không chạy trong QA hoặc TRAKE
+và không tự ghi đè kết quả retrieval.
+
 ### QA
 
 Hybrid retrieval -> evidence-aware candidate selection -> contact sheet -> Gemini QA -> optional full-resolution refinement -> answer variants và frame evidence.

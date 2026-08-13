@@ -19,6 +19,7 @@ from aic_pipeline.offline_search_engine import OfflineSearchEngine
 from aic_pipeline.task_router import route_query
 from aic_pipeline.qa_gemini import GeminiQAEngine, local_exact_ocr_answer, qa_grounding_query
 from aic_pipeline.temporal_alignment import TemporalAligner
+from aic_pipeline.kis_review import build_kis_review_pack
 from aic_pipeline.retrieval_fusion import robust_unit
 from aic_pipeline.submission import build_qa_submissions, build_trake_submissions
 
@@ -40,6 +41,7 @@ def main() -> None:
     frame_cache.mkdir(parents=True, exist_ok=True)
     qa_engine = [None]
     temporal_aligner = [None]
+    kis_frame_cache: dict[str, pd.DataFrame] = {}
     warmup_seconds = 0.0
     if not args.no_warmup:
         warmup_started = time.perf_counter()
@@ -328,6 +330,29 @@ def main() -> None:
                     response["kis_moment_refinement"] = {
                         "original_frame_id": original_frame, **refined,
                     }
+                if task.task == "KIS" and response.get("results"):
+                    review_video_ids = []
+                    for item in response["results"]:
+                        value = str(item["video_id"])
+                        if value not in review_video_ids:
+                            review_video_ids.append(value)
+                        if len(review_video_ids) >= min(5, int(request.get("review_videos", 3))):
+                            break
+                    review_tables = []
+                    feature_root = ROOT / "workspace" / "features" / "google_siglip2_base_patch16_224"
+                    for video_id in review_video_ids:
+                        if video_id not in kis_frame_cache:
+                            path = feature_root / f"{video_id}.parquet"
+                            kis_frame_cache[video_id] = (pd.read_parquet(
+                                path, columns=["video_id", "frame_id", "pts_time"])
+                                if path.exists() else engine.frames[engine.frames.video_id == video_id])
+                        review_tables.append(kis_frame_cache[video_id])
+                    review_frames = pd.concat(review_tables, ignore_index=True) if review_tables else engine.frames
+                    response["kis_review_pack"] = build_kis_review_pack(
+                        query, response["results"], review_frames,
+                        maximum_videos=min(5, int(request.get("review_videos", 3))),
+                        scenes_per_video=min(5, int(request.get("review_scenes", 3))),
+                        frames_per_scene=min(25, int(request.get("review_frames", 25))))
                 response["latency_seconds"] = time.perf_counter() - started_query
                 self.send_json(200, response)
             except (ValueError, KeyError, TypeError, json.JSONDecodeError) as exc:
