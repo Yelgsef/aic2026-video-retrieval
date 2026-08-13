@@ -303,6 +303,15 @@ class OfflineSearchEngine:
             }
             if exact_ocr_frames:
                 orders["exact_ocr"] = list(exact_ocr_frames)
+            exact_metadata_rows = []
+            if plan.exact_terms:
+                patterns = [re.compile(rf"(?<!\w){re.escape(term)}(?!\w)", re.IGNORECASE)
+                            for term in plan.exact_terms]
+                for row_id, text in enumerate(self.scenes.retrieval_text.fillna("").astype(str)):
+                    if all(pattern.search(text) for pattern in patterns):
+                        exact_metadata_rows.append(row_id)
+                if exact_metadata_rows:
+                    orders["exact_metadata"] = exact_metadata_rows[:candidate_k]
             if openclip_scores is not None:
                 orders["openclip"] = np.argsort(-openclip_scores)[:candidate_k].tolist()
             if object_constraints:
@@ -316,7 +325,8 @@ class OfflineSearchEngine:
             fused: dict[int, float] = {}
             for branch, order in orders.items():
                 for rank, row in enumerate(order, 1):
-                    branch_weight = 5.0 if branch == "exact_ocr" else weights[branch]
+                    branch_weight = (5.0 if branch == "exact_ocr" else
+                                     3.0 if branch == "exact_metadata" else weights[branch])
                     fused[row] = fused.get(row, 0.0) + branch_weight / (60 + rank)
             rapid = {row: fuzz.WRatio(lexical_query, str(self.scenes.iloc[row].retrieval_text)) for row in fused}
             for rank, row in enumerate(sorted(rapid, key=rapid.get, reverse=True), 1):

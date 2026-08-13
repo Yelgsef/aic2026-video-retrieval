@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import os
+import re
 from pathlib import Path
 from typing import Any
 
@@ -41,6 +42,114 @@ class TemporalAligner:
             output.append(group_vectors)
             offset += len(group)
         return output
+
+    def refine_kis_moment(self, video_id: str, query: str,
+                          scene_windows: list[dict[str, Any]],
+                          clip_scales: tuple[float, ...] = (0.8, 1.6, 3.2),
+                          maximum_windows: int = 8) -> dict[str, Any]:
+        """Choose a precise KIS frame inside a retrieved video.
+
+        Scene retrieval is deliberately coarse. This method reuses the dense
+        stride-5 SigLIP2 feature stream to resolve short actions and ordinal
+        wording without decoding the video or making an external API call.
+        """
+        feature_dir = self.root / "workspace" / "features" / "google_siglip2_base_patch16_224"
+        metadata = pd.read_parquet(feature_dir / f"{video_id}.parquet").sort_values(
+            "embedding_row").reset_index(drop=True)
+        embeddings = np.asarray(np.load(feature_dir / f"{video_id}.f16.npy", mmap_mode="r"),
+                                dtype=np.float32)
+        embeddings /= np.maximum(np.linalg.norm(embeddings, axis=1, keepdims=True), 1e-12)
+        group = self._event_vectors([query])[0]
+        frame_scores = (embeddings @ group.T).max(axis=1)[None, :]
+        scores = self._fuse_short_clip_scores(
+            frame_scores, embeddings, metadata.pts_time.to_numpy(), [group], clip_scales)[0]
+        motion_scores, motion_gates = motion_aware_scores([query], embeddings, scores[None, :])
+        if motion_gates[0]:
+            scores = motion_scores[0]
+
+        frame_ids = metadata.frame_id.to_numpy()
+        eligible = np.zeros(len(metadata), dtype=bool)
+        priors = np.zeros(len(metadata), dtype=np.float32)
+        used_windows = []
+        for rank, window in enumerate(scene_windows[:maximum_windows]):
+            # Include context on both sides: ordinal actions often begin just
+            # before the semantic scene selected by a static representative.
+            span = max(1, int(window["end_frame_exclusive"]) - int(window["start_frame"]))
+            margin = max(75, min(300, span // 2))
+            mask = ((frame_ids >= int(window["start_frame"]) - margin)
+                    & (frame_ids < int(window["end_frame_exclusive"]) + margin))
+            eligible |= mask
+            priors[mask] = np.maximum(priors[mask], 0.08 / (rank + 1))
+            used_windows.append({"scene_index": int(window["scene_index"]),
+                                 "start_frame": int(window["start_frame"]),
+                                 "end_frame_exclusive": int(window["end_frame_exclusive"])})
+        # Global peaks preserve recall when coarse retrieval selected the right
+        # video but missed the precise scene.
+        global_positions = np.argsort(-scores)[:100]
+        eligible[global_positions] = True
+        calibrated = robust_unit(scores) + priors
+        positions = np.flatnonzero(eligible)
+        if not len(positions):
+            positions = np.arange(len(metadata))
+
+        # Non-maximum suppression converts a run of near-identical stride-5
+        # frames into one occurrence. Keep enough separation to distinguish
+        # repeated gestures such as two claps or two scoops.
+        peak_positions = []
+        minimum_gap = 20
+        for position in positions[np.argsort(-calibrated[positions])]:
+            if all(abs(int(frame_ids[position]) - int(frame_ids[old])) >= minimum_gap
+                   for old in peak_positions):
+                peak_positions.append(int(position))
+            if len(peak_positions) >= 40:
+                break
+        peak_positions.sort(key=lambda value: int(frame_ids[value]))
+        folded = " ".join(query.casefold().split())
+        ordinal_match = re.search(r"(?:lần\s+thứ|thứ)\s*(\d+)", folded)
+        ordinal_words = {"một": 1, "nhất": 1, "hai": 2, "ba": 3,
+                         "bốn": 4, "tư": 4, "năm": 5}
+        ordinal_word_match = re.search(
+            r"(?:lần\s+thứ|thứ)\s*(một|nhất|hai|ba|bốn|tư|năm)\b", folded)
+        if ordinal_match:
+            ordinal = max(1, int(ordinal_match.group(1)))
+        elif ordinal_word_match:
+            ordinal = ordinal_words[ordinal_word_match.group(1)]
+        elif "đầu tiên" in folded or "lần đầu" in folded or "bắt đầu" in folded:
+            ordinal = 1
+        elif "cuối cùng" in folded:
+            ordinal = -1
+        else:
+            ordinal = 0
+
+        if ordinal and peak_positions:
+            # Select the strongest temporal episode, then the requested peak
+            # chronologically inside it. An episode gap of ten seconds avoids
+            # treating unrelated occurrences elsewhere in a long video as the
+            # first/second action.
+            episode_gap = 300
+            episodes: list[list[int]] = []
+            for position in peak_positions:
+                if not episodes or int(frame_ids[position]) - int(frame_ids[episodes[-1][-1]]) > episode_gap:
+                    episodes.append([position])
+                else:
+                    episodes[-1].append(position)
+            episode = max(episodes, key=lambda group_positions: float(
+                max(calibrated[position] for position in group_positions)))
+            strong = [position for position in episode
+                      if calibrated[position] >= max(calibrated[p] for p in episode) - 0.18]
+            if ordinal == -1:
+                selected = strong[-1]
+            else:
+                selected = strong[min(ordinal - 1, len(strong) - 1)]
+        else:
+            selected = int(positions[np.argmax(calibrated[positions])])
+        row = metadata.iloc[selected]
+        return {"video_id": video_id, "frame_id": int(row.frame_id),
+                "pts_time": float(row.pts_time), "shot_id": int(row.shot_id),
+                "moment_score": float(calibrated[selected]), "ordinal": ordinal,
+                "motion_reranking": bool(motion_gates[0]),
+                "clip_scales": list(clip_scales), "used_windows": used_windows,
+                "peak_frame_ids": [int(frame_ids[position]) for position in peak_positions]}
 
     def align(self, video_id: str, events: list[str],
               event_windows: list[list[dict[str, Any]]] | None = None,

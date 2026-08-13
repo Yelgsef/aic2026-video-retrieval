@@ -126,6 +126,11 @@ Score được robust-normalize và hợp nhất bằng RRF/normalized fusion th
 
 Query variants -> hybrid retrieval -> fusion -> reranker -> danh sách frame/video xếp hạng. Output hỗ trợ top 100 submission.
 
+Các số/mã xuất hiện nguyên vẹn trong query có một exact-metadata branch để tránh
+visual similarity nhầm `126` thành `152`. API cũng có tầng dense short-clip moment
+refinement cho ablation (`moment_refinement=true`), nhưng mặc định tắt: benchmark
+hiện tại cho thấy embedding ảnh tĩnh chưa đủ ổn định để tự đếm “lần thứ hai”.
+
 ### QA
 
 Hybrid retrieval -> evidence-aware candidate selection -> contact sheet -> Gemini QA -> optional full-resolution refinement -> answer variants và frame evidence.

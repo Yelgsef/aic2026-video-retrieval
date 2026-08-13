@@ -314,6 +314,20 @@ def main() -> None:
                                          reranker_fusion=str(request.get("reranker_fusion", "auto")),
                                          online_gemini_text=bool(request.get("online_gemini_text", False)),
                                          query_transformer=bool(request.get("query_transformer", True)))
+                if (task.task == "KIS" and response.get("results")
+                        and bool(request.get("moment_refinement", False))):
+                    selected_video = str(response["results"][0]["video_id"])
+                    windows = [item for item in response["results"]
+                               if str(item["video_id"]) == selected_video][:8]
+                    if temporal_aligner[0] is None:
+                        temporal_aligner[0] = TemporalAligner(ROOT, args.device)
+                    original_frame = int(response["results"][0]["best_frame_id"])
+                    refined = temporal_aligner[0].refine_kis_moment(
+                        selected_video, query, windows)
+                    response["results"][0]["best_frame_id"] = int(refined["frame_id"])
+                    response["kis_moment_refinement"] = {
+                        "original_frame_id": original_frame, **refined,
+                    }
                 response["latency_seconds"] = time.perf_counter() - started_query
                 self.send_json(200, response)
             except (ValueError, KeyError, TypeError, json.JSONDecodeError) as exc:
