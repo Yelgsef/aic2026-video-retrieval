@@ -4,6 +4,7 @@ import argparse
 import json
 import os
 from pathlib import Path
+import sys
 import time
 
 
@@ -38,10 +39,22 @@ def main() -> None:
     if output_path.exists() and not args.force:
         raise FileExistsError(f"Transcript exists: {output_path}")
 
-    # CTranslate2 on Windows can reuse CUDA/cuDNN DLLs shipped with the SigLIP torch runtime.
-    torch_lib = PROJECT_ROOT / "environments" / "siglip2" / ".venv" / "Lib" / "site-packages" / "torch" / "lib"
-    if torch_lib.is_dir():
-        os.environ["PATH"] = str(torch_lib) + os.pathsep + os.environ.get("PATH", "")
+    # Reuse the CUDA runtime libraries installed with the SigLIP PyTorch environment.
+    siglip_site = PROJECT_ROOT / "environments" / "siglip2" / ".venv"
+    windows_torch_lib = siglip_site / "Lib" / "site-packages" / "torch" / "lib"
+    if windows_torch_lib.is_dir():
+        os.environ["PATH"] = str(windows_torch_lib) + os.pathsep + os.environ.get("PATH", "")
+    linux_nvidia = siglip_site / "lib" / "python3.10" / "site-packages" / "nvidia"
+    linux_cuda_libs = [linux_nvidia / component / "lib" for component in ("cublas", "cudnn")]
+    linux_cuda_libs = [path for path in linux_cuda_libs if path.is_dir()]
+    if linux_cuda_libs and not os.environ.get("AIC_ASR_CUDA_PATH_READY"):
+        environment = os.environ.copy()
+        current = environment.get("LD_LIBRARY_PATH", "")
+        environment["LD_LIBRARY_PATH"] = os.pathsep.join(
+            [*(str(path) for path in linux_cuda_libs), current]
+        ).rstrip(os.pathsep)
+        environment["AIC_ASR_CUDA_PATH_READY"] = "1"
+        os.execve(sys.executable, [sys.executable, *sys.argv], environment)
 
     from faster_whisper import WhisperModel
 
