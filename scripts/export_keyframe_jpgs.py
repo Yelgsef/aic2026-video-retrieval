@@ -27,6 +27,8 @@ def main() -> None:
     parser.add_argument("--encoder-id", default="openclip_vit_b32_openai_quickgelu")
     parser.add_argument("--quality", type=int, default=92)
     parser.add_argument("--max-images", type=int, default=None)
+    parser.add_argument("--output-dir", type=Path, default=None,
+                        help="Optional JPG output directory; defaults to workspace/keyframe_images/<video-id>.")
     parser.add_argument("--force", action="store_true")
     args = parser.parse_args()
     if not 1 <= args.quality <= 100:
@@ -44,7 +46,8 @@ def main() -> None:
     if keyframes.empty or keyframes["frame_id"].duplicated().any():
         raise ValueError("Keyframe manifest is empty or contains duplicate frame IDs")
 
-    image_dir = PROJECT_ROOT / "workspace" / "keyframe_images" / args.video_id
+    image_dir = (args.output_dir.resolve() if args.output_dir is not None else
+                 PROJECT_ROOT / "workspace" / "keyframe_images" / args.video_id)
     image_dir.mkdir(parents=True, exist_ok=True)
     targets = {
         int(row.frame_id): image_dir / f"frame_{int(row.frame_id):09d}.jpg"

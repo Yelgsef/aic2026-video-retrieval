@@ -26,6 +26,15 @@ class QASelection(BaseModel):
     confidence: float = Field(ge=0, le=1)
 
 
+class QASceneShortlist(BaseModel):
+    candidate_labels: list[str] = Field(
+        min_length=1, max_length=3,
+        description="One to three candidate labels ordered by visual scene match",
+    )
+    evidence_vi: str
+    confidence: float = Field(ge=0, le=1)
+
+
 def qa_grounding_query(question: str) -> str:
     """Remove answer-slot wording while preserving the visual scene description."""
     text = question.strip().rstrip("?.! ")
@@ -154,6 +163,23 @@ class GeminiQAEngine:
                       f"{label} | {candidate['video_id']} | frame {candidate['best_frame_id']}{crop_label}", fill="black")
         return sheet, mapping
 
+    @staticmethod
+    def _spatial_text_crops(image: Image.Image, question: str) -> list[tuple[str, Image.Image]]:
+        """Create QA-only crops for small text referenced by spatial language."""
+        folded = unicodedata.normalize("NFKD", question.casefold()).replace("đ", "d")
+        folded = "".join(char for char in folded if not unicodedata.combining(char))
+        width, height = image.size
+        crops: list[tuple[str, Image.Image]] = []
+        if any(cue in folded for cue in ("ben phai", "phia phai", "goc phai")):
+            crops.append(("right-side-text", image.crop((int(width * 0.38), 0, width, height))))
+        if any(cue in folded for cue in ("ben trai", "phia trai", "goc trai")):
+            crops.append(("left-side-text", image.crop((0, 0, int(width * 0.62), height))))
+        if any(cue in folded for cue in ("phia tren", "ben tren", "o tren")):
+            crops.append(("upper-text", image.crop((0, 0, width, int(height * 0.62)))))
+        if any(cue in folded for cue in ("phia duoi", "ben duoi", "o duoi")):
+            crops.append(("lower-text", image.crop((0, int(height * 0.38), width, height))))
+        return crops
+
     def answer(self, question: str, retrieval_results: list[dict[str, Any]], maximum_candidates: int = 24) -> dict[str, Any]:
         answer_started = time.perf_counter()
         timings: dict[str, float] = {}
@@ -248,10 +274,22 @@ Rules:
         for model in (self.model,):
             for attempt in range(2):
                 try:
+                    first_prompt = prompt
+                    first_schema: type[BaseModel] = QASelection
+                    if reasoning.needs_exact_text:
+                        first_prompt = f"""Shortlist visual scenes for an exact-text AIC question.
+Question: {question}
+Use every visual constraint in the question: people, clothing, objects, colors, layout, left/right position and background.
+This pass is ONLY scene grounding. Do not answer, translate or infer the requested text.
+Return 1-3 candidate labels ordered by how completely the frame satisfies the whole scene description.
+The labels must come from: {', '.join(mapping)}.
+Semantic topic similarity alone is not sufficient. A frame about the same topic but with the wrong layout is a hard negative.
+"""
+                        first_schema = QASceneShortlist
                     response = self.client.models.generate_content(
-                        model=model, contents=[prompt, sheet],
+                        model=model, contents=[first_prompt, sheet],
                         config=types.GenerateContentConfig(
-                            response_mime_type="application/json", response_schema=QASelection,
+                            response_mime_type="application/json", response_schema=first_schema,
                             temperature=0.1, max_output_tokens=512,
                             thinking_config=types.ThinkingConfig(thinking_level="MINIMAL")))
                     used_model = model
@@ -267,12 +305,24 @@ Rules:
         if response is None:
             raise RuntimeError(f"Gemini QA failed after retries: {last_error}")
         timings["gemini_first_pass"] = time.perf_counter() - stage_started
-        selection = QASelection.model_validate_json(response.text)
+        shortlist_labels: list[str] = []
+        if reasoning.needs_exact_text:
+            shortlist = QASceneShortlist.model_validate_json(response.text)
+            shortlist_labels = [value.strip().upper() for value in shortlist.candidate_labels]
+            shortlist_labels = list(dict.fromkeys(value for value in shortlist_labels if value in mapping))
+            if not shortlist_labels:
+                raise ValueError("Gemini returned no valid QA scene shortlist labels")
+            label = shortlist_labels[0]
+            candidate = mapping[label]
+            selection = QASelection(candidate_label=label, answer="", evidence_vi=shortlist.evidence_vi,
+                                    confidence=shortlist.confidence)
+        else:
+            selection = QASelection.model_validate_json(response.text)
+            label = selection.candidate_label.strip().upper()
+            if label not in mapping:
+                raise ValueError(f"Gemini returned invalid candidate label: {label}")
+            candidate = mapping[label]
         initial_selection = selection
-        label = selection.candidate_label.strip().upper()
-        if label not in mapping:
-            raise ValueError(f"Gemini returned invalid candidate label: {label}")
-        candidate = mapping[label]
         refined_answer = False
         # Second pass is expensive. Use it only for temporal/object/OCR-like
         # questions or when Gemini itself reports weak confidence.
@@ -292,23 +342,50 @@ Rules:
                 int(candidate["best_frame_id"]), maximum=5)
         else:
             detail_ids = []
-        for frame_id in ((candidate.get("top_visual_frame_ids", [])
-                          + candidate.get("representative_frame_ids", [])) if needs_refinement else []):
-            if len(detail_ids) >= (5 if reasoning.needs_temporal else 4):
-                break
-            frame_id = int(frame_id)
-            if frame_id not in detail_ids:
-                detail_ids.append(frame_id)
+        detail_candidates: list[dict[str, Any]] = []
         stage_started = time.perf_counter()
-        detail_candidates = []
-        for frame_id in detail_ids:
-            item = dict(candidate)
-            item["best_frame_id"] = frame_id
-            item["_image"] = self._decode(str(item["video_id"]), frame_id)
-            detail_candidates.append(item)
+        detail_sources = [candidate]
+        if reasoning.needs_exact_text:
+            detail_sources = [mapping[value] for value in shortlist_labels]
+        for source_candidate in detail_sources:
+            source_ids = ([int(source_candidate["best_frame_id"])]
+                          + [int(value) for value in source_candidate.get("top_visual_frame_ids", [])]
+                          + [int(value) for value in source_candidate.get("representative_frame_ids", [])])
+            source_limit = 4 if reasoning.needs_exact_text else (5 if reasoning.needs_temporal else 4)
+            selected_source_ids: list[int] = []
+            for frame_id in source_ids:
+                if frame_id not in selected_source_ids:
+                    selected_source_ids.append(frame_id)
+                if len(selected_source_ids) >= source_limit:
+                    break
+            for frame_id in selected_source_ids:
+                item = dict(source_candidate)
+                item["best_frame_id"] = frame_id
+                item["_image"] = self._decode(str(item["video_id"]), frame_id)
+                detail_ids.append(frame_id)
+                # Keep the full frame for scene grounding and add a directional
+                # crop for exact transcription of small signs/pages.
+                if reasoning.needs_exact_text:
+                    for crop_label, crop in self._spatial_text_crops(item["_image"], question):
+                        crop_item = dict(item)
+                        crop_item["_image"] = crop.resize(
+                            (crop.width * 2, crop.height * 2), Image.Resampling.LANCZOS)
+                        crop_item["_object_crop"] = True
+                        crop_item["_object_label"] = crop_label
+                        detail_candidates.append(crop_item)
+                detail_candidates.append(item)
+        if not reasoning.needs_exact_text:
+            detail_candidates = []
+            for frame_id in detail_ids:
+                item = dict(candidate)
+                item["best_frame_id"] = frame_id
+                item["_image"] = self._decode(str(item["video_id"]), frame_id)
+                detail_candidates.append(item)
         timings["detail_decode"] = time.perf_counter() - stage_started
         object_crop_count = 0
-        grounder = self._get_grounder()
+        # Directional text crops are deterministic and much cheaper than
+        # loading GroundingDINO. Reserve object grounding for non-text QA.
+        grounder = self._get_grounder() if reasoning.needs_object_crop and not reasoning.needs_exact_text else None
         if grounder and detail_candidates and reasoning.needs_object_crop:
             try:
                 grounded = grounder.crop([item["_image"] for item in detail_candidates], question, maximum=3)
@@ -335,10 +412,12 @@ Rules:
                 object_crop_count = 0
         if detail_candidates:
             detail_sheet, detail_mapping = self._sheet(detail_candidates)
-            detail_prompt = f"""Answer the visual question from these high-resolution views of one scene.
+            detail_prompt = f"""Answer the visual question from these high-resolution candidate views.
 Question: {question}
 Question type: {reasoning.kind}. Specialized instruction: {reasoning.instruction}
-Select the clearest evidence frame. Read exact visible text carefully. Do not infer hidden facts.
+Select the frame that satisfies the complete scene description, not merely the same topic.
+Read exact visible text carefully. Preserve the original language, accents, spelling and word order.
+Do not translate, paraphrase, summarize or invent text from the topic. If the requested text is not legible, answer UNCERTAIN with confidence below 0.5.
 candidate_label must be one of {', '.join(detail_mapping)}. Keep the answer short.
 """
             stage_started = time.perf_counter()
@@ -361,8 +440,9 @@ candidate_label must be one of {', '.join(detail_mapping)}. Keep the answer shor
                 pass
             timings["gemini_refinement"] = time.perf_counter() - stage_started
         adjudicated = False
-        answers_agree = answers_equivalent(initial_selection.answer, selection.answer)
-        if refined_answer and not answers_agree and detail_candidates:
+        answers_agree = (answers_equivalent(initial_selection.answer, selection.answer)
+                         if initial_selection.answer else True)
+        if refined_answer and initial_selection.answer and not answers_agree and detail_candidates:
             # A third Gemini adjudication made tail latency unbounded. Resolve
             # locally: retain the answer with higher self-reported confidence.
             # Refinement is a zoomed verification pass, not permission to
