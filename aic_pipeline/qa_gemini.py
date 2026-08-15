@@ -25,6 +25,13 @@ class QASelection(BaseModel):
     confidence: float = Field(ge=0, le=1)
 
 
+class QAAnswerSelection(BaseModel):
+    candidate_label: str = Field(description="Exactly one candidate label, for example C1")
+    answer: str = Field(min_length=1, description="Short non-empty answer; use UNCERTAIN if illegible")
+    evidence_vi: str
+    confidence: float = Field(ge=0, le=1)
+
+
 class QASceneShortlist(BaseModel):
     candidate_labels: list[str] = Field(
         min_length=1, max_length=3,
@@ -88,7 +95,7 @@ def local_exact_ocr_answer(root: Path, question: str,
 
 class GeminiQAEngine:
     def __init__(self, root: Path, model: str | None = None,
-                 request_timeout_ms: int = 20_000) -> None:
+                 request_timeout_ms: int = 90_000) -> None:
         self.root = root.resolve()
         load_dotenv(self.root / ".env")
         self.client = RouterChatClient(self.root, request_timeout_ms / 1000)
@@ -171,12 +178,12 @@ class GeminiQAEngine:
         timings: dict[str, float] = {}
         reasoning = classify_question(question)
         candidates = []
-        # First pass normally maximizes scene recall with one strong frame per
-        # scene. Exact-text questions need a different trade-off: a scene can
-        # contain a book/page/title for only a few frames, so inspect several
-        # temporally diverse views from each of the six strongest scenes. This
-        # keeps the same 24-image budget while avoiding a single-frame OCR miss.
-        views_per_scene = 4 if reasoning.needs_exact_text else 1
+        # Keep broad scene recall in the grounding pass. Spending four tiles on
+        # each exact-text scene used to restrict the sheet to only six scenes;
+        # the correct scene could already be present in retrieval at rank 7-24
+        # and never reach the VLM. The second pass is responsible for inspecting
+        # several full-resolution views after the scene shortlist is known.
+        views_per_scene = 1
         candidate_budget = max(maximum_candidates, 24) if reasoning.needs_exact_text else maximum_candidates
         scene_limit = max(1, candidate_budget // views_per_scene)
         ranked_results = list(retrieval_results)
@@ -214,18 +221,13 @@ class GeminiQAEngine:
                 for evidence in result.get("ocr_evidence", []):
                     if typed_name.search(str(evidence.get("text", ""))):
                         typed_ocr_ids.append(int(evidence["frame_id"]))
-            if reasoning.needs_exact_text and representative_ids:
-                # Prefer the visual best, then evenly cover the scene. With six
-                # representatives this selects approximately start/middle/end.
-                slots = views_per_scene - 1
-                if slots == 1:
-                    sampled_representatives = [representative_ids[len(representative_ids) // 2]]
-                else:
-                    sampled_representatives = [
-                        representative_ids[round(index * (len(representative_ids) - 1) / (slots - 1))]
-                        for index in range(slots)
-                    ]
-                frame_ids = typed_ocr_ids + visual_ids[:1] + sampled_representatives
+            if reasoning.needs_exact_text:
+                # One visual tile per scene in pass one. Prefer an OCR-evidence
+                # frame when available, otherwise the strongest visual frame,
+                # then the middle representative as a robust fallback.
+                frame_ids = typed_ocr_ids[:1] + visual_ids[:1]
+                if not frame_ids and representative_ids:
+                    frame_ids = [representative_ids[len(representative_ids) // 2]]
             else:
                 frame_ids = visual_ids[:1]
             if not frame_ids:
@@ -261,7 +263,7 @@ Rules:
             for attempt in range(2):
                 try:
                     first_prompt = prompt
-                    first_schema: type[BaseModel] = QASelection
+                    first_schema: type[BaseModel] = QAAnswerSelection
                     if reasoning.needs_exact_text:
                         first_prompt = f"""Shortlist visual scenes for an exact-text AIC question.
 Question: {question}
@@ -279,9 +281,9 @@ Semantic topic similarity alone is not sufficient. A frame about the same topic 
                     break
                 except Exception as exc:
                     last_error = exc
-                    if not any(code in str(exc) for code in (
-                            "429", "503", "504", "RESOURCE_EXHAUSTED", "UNAVAILABLE", "DEADLINE_EXCEEDED")):
-                        raise
+                    # Gateways may return truncated/multiple JSON or transient
+                    # network failures. Retry the bounded first pass once;
+                    # schema validation still prevents malformed output use.
                     time.sleep(3 * (attempt + 1))
             if response is not None:
                 break
@@ -300,7 +302,7 @@ Semantic topic similarity alone is not sufficient. A frame about the same topic 
             selection = QASelection(candidate_label=label, answer="", evidence_vi=shortlist.evidence_vi,
                                     confidence=shortlist.confidence)
         else:
-            selection = QASelection.model_validate_json(response.text)
+            selection = QAAnswerSelection.model_validate_json(response.text)
             label = selection.candidate_label.strip().upper()
             if label not in mapping:
                 raise ValueError(f"Gemini returned invalid candidate label: {label}")
@@ -329,12 +331,28 @@ Semantic topic similarity alone is not sufficient. A frame about the same topic 
         stage_started = time.perf_counter()
         detail_sources = [candidate]
         if reasoning.needs_exact_text:
-            detail_sources = [mapping[value] for value in shortlist_labels]
+            # The grounding pass already orders its shortlist. Refine only the
+            # best-matching scene; expanding all three to full frames plus crops
+            # can create a 30+ image request that times out and adds hard
+            # negatives from otherwise plausible scenes.
+            detail_sources = [mapping[shortlist_labels[0]]]
         for source_candidate in detail_sources:
+            representatives = [int(value) for value in source_candidate.get("representative_frame_ids", [])]
+            if reasoning.needs_exact_text and representatives:
+                # Even temporal coverage prevents the detail pass from taking
+                # only the first few representatives and missing a short-lived
+                # sign/page near the middle or end of the scene.
+                count = min(6, len(representatives))
+                sampled_representatives = [
+                    representatives[round(index * (len(representatives) - 1) / max(1, count - 1))]
+                    for index in range(count)
+                ]
+            else:
+                sampled_representatives = representatives
             source_ids = ([int(source_candidate["best_frame_id"])]
                           + [int(value) for value in source_candidate.get("top_visual_frame_ids", [])]
-                          + [int(value) for value in source_candidate.get("representative_frame_ids", [])])
-            source_limit = 4 if reasoning.needs_exact_text else (5 if reasoning.needs_temporal else 4)
+                          + sampled_representatives)
+            source_limit = 6 if reasoning.needs_exact_text else (5 if reasoning.needs_temporal else 4)
             selected_source_ids: list[int] = []
             for frame_id in source_ids:
                 if frame_id not in selected_source_ids:
@@ -395,30 +413,56 @@ Semantic topic similarity alone is not sufficient. A frame about the same topic 
                 object_crop_count = 0
         if detail_candidates:
             detail_sheet, detail_mapping = self._sheet(detail_candidates)
+            ocr_context_lines: list[str] = []
+            if reasoning.needs_exact_text:
+                seen_ocr: set[str] = set()
+                for source_candidate in detail_sources:
+                    scene_key = (f"{source_candidate.get('video_id')} scene "
+                                 f"{source_candidate.get('scene_index')}")
+                    curated = source_candidate.get("ocr_lines", [])
+                    texts = [str(item.get("text", "")).strip() if isinstance(item, dict)
+                             else str(item).strip() for item in curated]
+                    texts = [value for value in texts if value and value.casefold() not in seen_ocr]
+                    for value in texts:
+                        seen_ocr.add(value.casefold())
+                    if texts:
+                        ocr_context_lines.append(f"- {scene_key}: " + " | ".join(texts[:12]))
+            ocr_context = ("\nOCR already extracted from the shortlisted scenes:\n"
+                           + "\n".join(ocr_context_lines)) if ocr_context_lines else ""
             detail_prompt = f"""Answer the visual question from these high-resolution candidate views.
 Question: {question}
 Question type: {reasoning.kind}. Specialized instruction: {reasoning.instruction}
 Select the frame that satisfies the complete scene description, not merely the same topic.
 Read exact visible text carefully. Preserve the original language, accents, spelling and word order.
+Use the supplied scene OCR only after visually matching it to the requested physical sign/page/object.
+Ignore TV logos, clocks, subtitles, headlines and scrolling tickers unless the question explicitly asks for them.
 Do not translate, paraphrase, summarize or invent text from the topic. If the requested text is not legible, answer UNCERTAIN with confidence below 0.5.
 candidate_label must be one of {', '.join(detail_mapping)}. Keep the answer short.
+{ocr_context}
 """
             stage_started = time.perf_counter()
-            try:
-                detail_response = self.client.json_response(
-                    detail_prompt, QASelection, detail_sheet, model=used_model,
-                    temperature=0.0, max_tokens=1024)
-                refined = QASelection.model_validate_json(detail_response.text)
-                refined_label = refined.candidate_label.strip().upper()
-                if refined_label in detail_mapping:
-                    selection = refined
-                    label = refined_label
-                    candidate = detail_mapping[refined_label]
-                    refined_answer = True
-            except Exception:
-                # The first pass remains a valid bounded-latency fallback.
-                pass
+            for detail_attempt in range(2):
+                try:
+                    detail_response = self.client.json_response(
+                        detail_prompt, QAAnswerSelection, detail_sheet, model=used_model,
+                        temperature=0.0, max_tokens=1024)
+                    refined = QAAnswerSelection.model_validate_json(detail_response.text)
+                    refined_label = refined.candidate_label.strip().upper()
+                    if refined_label in detail_mapping:
+                        selection = refined
+                        label = refined_label
+                        candidate = detail_mapping[refined_label]
+                        refined_answer = True
+                    break
+                except Exception:
+                    # Gateways occasionally truncate a valid visual response;
+                    # retry the bounded detail request once before falling back.
+                    if detail_attempt == 0:
+                        time.sleep(3)
             timings["gemini_refinement"] = time.perf_counter() - stage_started
+        if not selection.answer.strip():
+            selection.answer = "UNCERTAIN"
+            selection.confidence = min(selection.confidence, 0.49)
         adjudicated = False
         answers_agree = (answers_equivalent(initial_selection.answer, selection.answer)
                          if initial_selection.answer else True)

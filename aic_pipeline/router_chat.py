@@ -89,14 +89,16 @@ class RouterChatClient:
                 "If remote API auth is enabled, set NINEROUTER_KEY in .env."
             ) from exc
         text = str(raw["choices"][0]["message"]["content"]).strip()
-        start, end = text.find("{"), text.rfind("}")
-        if start >= 0 and end > start:
-            text = text[start:end + 1]
-        else:
-            match = re.search(r"```(?:json)?\s*(.*?)\s*```", text,
-                              re.DOTALL | re.IGNORECASE)
-            if match:
-                text = match.group(1).strip()
+        match = re.search(r"```(?:json)?\s*(.*?)\s*```", text,
+                          re.DOTALL | re.IGNORECASE)
+        if match:
+            text = match.group(1).strip()
+        start = text.find("{")
+        if start >= 0:
+            # Some gateways append a second JSON object or prose despite
+            # response_format. Decode only the first complete object.
+            value, _ = json.JSONDecoder().raw_decode(text[start:])
+            text = json.dumps(value, ensure_ascii=False)
         # Validate at the boundary so malformed router/provider output never
         # reaches retrieval or QA state.
         validated = schema.model_validate_json(text)

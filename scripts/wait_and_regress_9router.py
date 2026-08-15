@@ -29,7 +29,7 @@ def main() -> None:
     server = subprocess.Popen(
         ["uv", "run", "--project", "environments/siglip2", "python",
          "scripts/serve_offline_query.py", "--host", "127.0.0.1", "--port", "8767",
-         "--index", str(INDEX)], cwd=ROOT)
+         "--index", str(INDEX), "--no-warmup"], cwd=ROOT)
     try:
         for _ in range(120):
             try:

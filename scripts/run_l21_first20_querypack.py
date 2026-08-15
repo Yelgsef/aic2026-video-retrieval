@@ -4,6 +4,7 @@ import json
 import argparse
 import time
 import urllib.request
+import urllib.error
 from pathlib import Path
 
 
@@ -27,8 +28,12 @@ def call(endpoint: str, payload: dict) -> dict:
         data=json.dumps(payload, ensure_ascii=False).encode("utf-8"),
         headers={"Content-Type": "application/json; charset=utf-8"},
     )
-    with urllib.request.urlopen(request, timeout=900) as response:
-        return json.loads(response.read())
+    try:
+        with urllib.request.urlopen(request, timeout=900) as response:
+            return json.loads(response.read())
+    except urllib.error.HTTPError as exc:
+        body = exc.read().decode("utf-8", errors="replace")
+        raise RuntimeError(f"HTTP {exc.code}: {body}") from exc
 
 
 def main() -> None:
