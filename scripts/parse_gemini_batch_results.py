@@ -56,7 +56,7 @@ def main() -> None:
                 raise ValueError("missing or duplicate key")
             description = normalize(json.loads(response_text(envelope)))
             parsed.append({"scene_id": key, "video_id": args.video_id, "description": description,
-                           "provenance": {"source": "gemini_batch", "input": str(source), "line": line_number}})
+                           "provenance": {"source": "9router_chat", "input": str(source), "line": line_number}})
             seen.add(key)
         except (ValueError, TypeError, json.JSONDecodeError) as exc:
             errors.append({"line": line_number, "error": str(exc)})

@@ -8,7 +8,7 @@ Hệ thống xử lý video offline và truy vấn cho ba dạng bài AIC: KIS, 
 
 - OmniShotCut, sampling và keyframe coverage;
 - SigLIP2 visual embeddings và OpenCLIP ensemble tùy chọn;
-- Faster-Whisper ASR, PP-OCR và Gemini enrichment;
+- Faster-Whisper ASR, PP-OCR và 9Router VLM enrichment;
 - semantic scenes, object/spatial metadata và OCR-to-frame evidence;
 - BGE-M3, lexical/fuzzy retrieval, cross-encoder reranking và fusion;
 - QA bằng evidence frames, KIS ranking và TRAKE temporal alignment;
@@ -31,7 +31,18 @@ uv sync --project environments/gemini
 copy .env.example .env
 ```
 
-Điền `GEMINI_API_KEY` trong `.env`. Không commit file này.
+LLM online đi qua 9Router theo chuẩn OpenAI Chat Completions. Cấu hình trong
+`.env`:
+
+```env
+NINEROUTER_CHAT_URL=https://router.studev.net/v1/chat/completions
+NINEROUTER_MODEL=ag/gemini-3-flash
+NINEROUTER_KEY=
+```
+
+`NINEROUTER_KEY` đang cố ý để trống theo cấu hình router hiện tại. Nếu server
+bật xác thực, tạo key tại 9Router Dashboard và điền vào biến này. Không commit
+`.env`. Pipeline không cần `GEMINI_API_KEY`; text embedding dùng BGE-M3 local.
 
 ## Chạy frontend
 
@@ -70,6 +81,6 @@ archive/        video dataset, không commit
 
 - Metadata dùng `video_id`, `scene_index`, `frame_id` và timestamp gốc.
 - Không dùng video ID ground truth để lọc khi benchmark end-to-end.
-- Không để Gemini trả lời nếu không có bằng chứng trong OCR, ASR hoặc frame.
+- Không để VLM trả lời nếu không có bằng chứng trong OCR, ASR hoặc frame.
 - Chỉ commit code, cấu hình, test và tài liệu; không commit dữ liệu hay secrets.
 

@@ -10,10 +10,10 @@ from pathlib import Path
 
 import pandas as pd
 from dotenv import load_dotenv
-from google import genai
-from google.genai import types
 from PIL import Image
 from pydantic import BaseModel, Field
+
+from aic_pipeline.router_chat import RouterChatClient
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -31,15 +31,14 @@ class ProposedLabel(BaseModel):
 def main() -> None:
     parser = argparse.ArgumentParser(description="Generate resumable Gemini pseudo-labels for a validation review pack.")
     parser.add_argument("--pack", type=Path, default=ROOT / "workspace" / "validation" / "review_pack_50")
-    parser.add_argument("--model", default="gemini-3.6-flash")
+    parser.add_argument("--model")
     parser.add_argument("--workers", type=int, default=4)
     parser.add_argument("--limit", type=int, default=0)
     parser.add_argument("--requests-per-minute", type=float, default=4.5)
     parser.add_argument("--max-retries", type=int, default=8)
     args = parser.parse_args()
     load_dotenv(ROOT / ".env")
-    if not os.getenv("GEMINI_API_KEY"):
-        raise RuntimeError("GEMINI_API_KEY is not configured")
+    args.model = args.model or RouterChatClient(ROOT).model
     table = pd.read_csv(args.pack / "annotations.csv", keep_default_na=False)
     table["accepted_frame_id"] = table["accepted_frame_id"].astype(object)
     table["verified"] = table["verified"].astype(object)
@@ -57,7 +56,7 @@ def main() -> None:
 
     def client():
         if not hasattr(local, "client"):
-            local.client = genai.Client(api_key=os.environ["GEMINI_API_KEY"])
+            local.client = RouterChatClient(ROOT, timeout_seconds=120)
         return local.client
 
     def produce(index: int, row: pd.Series) -> tuple[int, dict]:
@@ -91,10 +90,9 @@ Rules:
                     if delay:
                         time.sleep(delay)
                     last_request[0] = time.monotonic()
-                response = client().models.generate_content(
-                    model=args.model, contents=[prompt, image_copy],
-                    config=types.GenerateContentConfig(response_mime_type="application/json",
-                                                       response_schema=ProposedLabel, temperature=0.1))
+                response = client().json_response(
+                    prompt, ProposedLabel, image_copy, model=args.model,
+                    temperature=0.1, max_tokens=768)
                 break
             except Exception as exc:
                 if attempt + 1 >= args.max_retries or not any(code in str(exc) for code in ("429", "503", "RESOURCE_EXHAUSTED", "UNAVAILABLE")):

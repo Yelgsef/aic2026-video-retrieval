@@ -3,17 +3,17 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import sys
 from pathlib import Path
 
 import pandas as pd
 from dotenv import load_dotenv
-from google import genai
-from google.genai import types
 from PIL import Image, ImageDraw, ImageOps
 from pydantic import BaseModel, Field
 
-
 ROOT = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(ROOT))
+from aic_pipeline.router_chat import RouterChatClient
 
 
 class OcrLine(BaseModel):
@@ -68,7 +68,7 @@ def main() -> None:
     parser.add_argument("--video-id", default="L21_V001")
     parser.add_argument("--shot-id", type=int, default=27)
     parser.add_argument("--max-images", type=int, default=8)
-    parser.add_argument("--model", default="gemini-3.6-flash")
+    parser.add_argument("--model")
     parser.add_argument(
         "--media-resolution", choices=("auto", "low", "medium", "high"), default="auto"
     )
@@ -76,9 +76,6 @@ def main() -> None:
     args = parser.parse_args()
 
     load_dotenv(ROOT / ".env")
-    api_key = os.getenv("GEMINI_API_KEY")
-    if not api_key:
-        raise RuntimeError("GEMINI_API_KEY is not configured in .env or the process environment")
 
     manifest_path = ROOT / "workspace" / "keyframe_images" / args.video_id / "manifest.parquet"
     manifest = pd.read_parquet(manifest_path)
@@ -100,32 +97,14 @@ Rules:
 - Empty evidence must be an empty list, never invented content.
 """
 
-    client = genai.Client(api_key=api_key)
-    media_resolution = {
-        "auto": None,
-        "low": types.MediaResolution.MEDIA_RESOLUTION_LOW,
-        "medium": types.MediaResolution.MEDIA_RESOLUTION_MEDIUM,
-        "high": types.MediaResolution.MEDIA_RESOLUTION_HIGH,
-    }[args.media_resolution]
-    config_kwargs = {
-        "response_mime_type": "application/json",
-        "response_schema": SceneDescription,
-        "temperature": 0.1,
-    }
-    if media_resolution is not None:
-        config_kwargs["media_resolution"] = media_resolution
-    if args.thinking_budget is not None:
-        config_kwargs["thinking_config"] = types.ThinkingConfig(
-            thinking_budget=args.thinking_budget
-        )
+    client = RouterChatClient(ROOT, timeout_seconds=120)
+    args.model = args.model or client.model
     with Image.open(sheet_path) as image:
-        response = client.models.generate_content(
-            model=args.model,
-            contents=[prompt, image.copy()],
-            config=types.GenerateContentConfig(**config_kwargs),
-        )
+        response = client.json_response(
+            prompt, SceneDescription, image.copy(), model=args.model,
+            temperature=0.1, max_tokens=4096)
     parsed = SceneDescription.model_validate_json(response.text)
-    usage = response.usage_metadata
+    usage = response.usage
     payload = {
         "video_id": args.video_id,
         "shot_id": args.shot_id,
@@ -135,7 +114,7 @@ Rules:
         "contact_sheet": str(sheet_path),
         "frames": frames,
         "description": parsed.model_dump(),
-        "usage": usage.model_dump() if usage else None,
+        "usage": usage,
     }
     output = ROOT / "workspace" / "gemini_smoke" / args.video_id / f"shot_{args.shot_id:06d}.json"
     output.parent.mkdir(parents=True, exist_ok=True)

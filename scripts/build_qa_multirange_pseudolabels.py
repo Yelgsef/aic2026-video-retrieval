@@ -7,7 +7,6 @@ import time
 from pathlib import Path
 
 import pandas as pd
-from google.genai import types
 from pydantic import BaseModel, Field
 
 
@@ -53,12 +52,9 @@ Return every candidate label where the image visibly supports both the described
 Do not accept a candidate based only on similarity, outside knowledge, or the supplied answer.
 An empty list is valid. Candidate labels: {', '.join(mapping)}.
 """
-        response = qa.client.models.generate_content(
-            model=qa.model, contents=[prompt, sheet],
-            config=types.GenerateContentConfig(
-                response_mime_type="application/json", response_schema=AcceptedEvidence,
-                temperature=0.0, max_output_tokens=768,
-                thinking_config=types.ThinkingConfig(thinking_level="MINIMAL")))
+        response = qa.client.json_response(
+            prompt, AcceptedEvidence, sheet, model=qa.model,
+            temperature=0.0, max_tokens=768)
         decision = AcceptedEvidence.model_validate_json(response.text)
         ranges = [{"video_id": str(label.video_id), "scene_id": str(label.scene_id),
                    "start_frame": int(label.start_frame),

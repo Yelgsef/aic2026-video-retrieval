@@ -14,7 +14,7 @@ Video dataset
   -> 1-2 medoid mỗi chunk + redundancy elimination
   -> coverage audit 103 frames + fallback ở cửa sổ trống
   -> SigLIP2 SO400M final visual embeddings
-  -> ASR + OCR + object evidence + Gemini scene enrichment
+  -> ASR + OCR + object evidence + 9Router scene enrichment
   -> semantic scenes và OCR-to-frame mapping
   -> multimodal offline index
   -> query transformer
@@ -52,12 +52,12 @@ Thiết kế này tránh hai cực đoan: chỉ giữ một medoid khiến mất
 ### ASR
 
 - Faster-Whisper large-v3, CUDA FP16 khi có GPU.
-- Gemini normalization chỉ dùng có điều kiện cho transcript nhiễu; không thay thế transcript gốc.
+- 9Router normalization chỉ dùng có điều kiện cho transcript nhiễu; không thay thế transcript gốc.
 
 ### OCR
 
 - PP-OCR cho local/full-resolution OCR.
-- Gemini crop OCR là fallback cho chữ khó hoặc nhỏ.
+- 9Router crop OCR là fallback cho chữ khó hoặc nhỏ.
 - Watermark, timestamp và lower-third lặp lại được lọc trước indexing.
 - Index giữ `ocr_evidence_json`, ánh xạ từng chuỗi OCR về đúng `frame_id`. Đây là bắt buộc cho câu hỏi đọc biển, tên cây, mã số và tiêu đề sách.
 
@@ -88,7 +88,7 @@ Local storage:
 - Parquet cho metadata;
 - NumPy arrays cho embeddings;
 - SQLite FTS5 cho lexical/fuzzy search;
-- cache SQLite cho Query Transformer/Gemini text.
+- cache SQLite cho Query Transformer; semantic text vectors dùng BGE-M3 local.
 
 Production trên Vast.ai có thể đẩy vectors và scalar metadata sang Milvus. `video_id`, `scene_index`, `frame_id`, timestamps và đường dẫn media vẫn là khóa chuẩn.
 
@@ -138,7 +138,7 @@ và không tự ghi đè kết quả retrieval.
 
 ### QA
 
-Hybrid retrieval -> evidence-aware candidate selection -> contact sheet -> Gemini QA -> optional full-resolution refinement -> answer variants và frame evidence.
+Hybrid retrieval -> evidence-aware candidate selection -> contact sheet -> 9Router QA -> optional full-resolution refinement -> answer variants và frame evidence.
 
 Nguyên tắc QA:
 
@@ -163,7 +163,7 @@ siglip-so400m-final
 asr-large-v3
 semantic-scenes
 objects-yoloworld
-gemini-batch-prepare/parse
+contact-sheet prepare -> parallel resumable 9Router enrichment -> parse
 fullres-ocr
 ASR/OCR normalization khi cần
 global index build
@@ -178,7 +178,7 @@ Không rebuild toàn dataset chỉ để thêm một video đã có final embedd
 - retrieval: MRR, R@5, R@10, R@20, R@100;
 - QA: video match, frame-range match và answer accuracy/multi-answer match;
 - TRAKE: đúng video và đúng toàn bộ thứ tự sự kiện;
-- latency: retrieval, decode/contact sheet, Gemini first pass và refinement.
+- latency: retrieval, decode/contact sheet, 9Router first pass và refinement.
 
 R@K chỉ cho biết scene đúng có nằm trong K kết quả đầu hay không. Tăng K có thể tăng recall nhưng cũng tăng nhiễu; QA chỉ nên mở rộng có kiểm soát và dựa trên evidence type.
 

@@ -4,7 +4,6 @@ import argparse
 import base64
 import hashlib
 import json
-import os
 import sqlite3
 import sys
 from datetime import datetime, timezone
@@ -171,83 +170,15 @@ def prepare(args: argparse.Namespace) -> None:
                       "jsonl": str(jsonl), "bytes": len(payload), "sha256": digest}, indent=2))
 
 
-def client():
-    from dotenv import load_dotenv
-    from google import genai
-    from google.genai import types
-    load_dotenv(ROOT / ".env")
-    if not os.getenv("GEMINI_API_KEY"):
-        raise RuntimeError("GEMINI_API_KEY is not configured")
-    retry = types.HttpRetryOptions(attempts=2, initial_delay=1, max_delay=4,
-                                   http_status_codes=[429, 500, 502, 503, 504])
-    return genai.Client(api_key=os.environ["GEMINI_API_KEY"],
-                        http_options=types.HttpOptions(timeout=120_000, retry_options=retry))
-
-
-def find_job(conn: sqlite3.Connection, video_id: str) -> sqlite3.Row:
-    row = conn.execute("SELECT * FROM jobs WHERE video_id=? ORDER BY created_at DESC LIMIT 1", (video_id,)).fetchone()
-    if not row:
-        raise ValueError(f"No prepared batch for {video_id}")
-    return row
-
-
-def submit(args: argparse.Namespace) -> None:
-    from google.genai import types
-    api = client()
-    with db() as conn:
-        row = find_job(conn, args.video_id)
-        if row["batch_job_name"]:
-            print(f"Already submitted: {row['batch_job_name']}")
-            return
-        uploaded_name = row["uploaded_file_name"]
-        if not uploaded_name:
-            uploaded = api.files.upload(file=row["jsonl_path"], config=types.UploadFileConfig(
-                display_name=f"aic-{args.video_id}-{row['input_hash'][:12]}", mime_type="jsonl"))
-            uploaded_name = uploaded.name
-            conn.execute("UPDATE jobs SET uploaded_file_name=?,state='UPLOADED',updated_at=? WHERE input_hash=?",
-                         (uploaded_name, now(), row["input_hash"]))
-        job = api.batches.create(model=args.model, src=uploaded_name,
-                                 config={"display_name": f"aic-{args.video_id}-{row['input_hash'][:12]}"})
-        state = state_name(job.state)
-        conn.execute("UPDATE jobs SET model=?,batch_job_name=?,state=?,updated_at=? WHERE input_hash=?",
-                     (args.model, job.name, state, now(), row["input_hash"]))
-        print(json.dumps({"job": job.name, "state": state}, indent=2))
-
-
-def status(args: argparse.Namespace, download_result: bool = False) -> None:
-    api = client()
-    with db() as conn:
-        row = find_job(conn, args.video_id)
-        if not row["batch_job_name"]:
-            raise ValueError("Batch is prepared but has not been submitted")
-        job = api.batches.get(name=row["batch_job_name"])
-        state = state_name(job.state)
-        result_name = getattr(getattr(job, "dest", None), "file_name", None)
-        conn.execute("UPDATE jobs SET state=?,result_file_name=?,updated_at=? WHERE input_hash=?",
-                     (state, result_name, now(), row["input_hash"]))
-        print(json.dumps({"job": job.name, "state": state, "result_file": result_name}, indent=2))
-        if download_result:
-            if state != "JOB_STATE_SUCCEEDED" or not result_name:
-                raise RuntimeError(f"Batch is not ready: {state}")
-            output = BATCH_ROOT / args.video_id / "responses.jsonl"
-            output.write_bytes(api.files.download(file=result_name))
-            print(f"Downloaded: {output}")
-
-
 def main() -> None:
-    parser = argparse.ArgumentParser(description="Prepare and manage resumable Gemini Batch scene enrichment.")
+    parser = argparse.ArgumentParser(description="Prepare scene contact sheets for 9Router enrichment.")
     sub = parser.add_subparsers(dest="command", required=True)
-    for name in ("prepare", "submit", "status", "download"):
-        item = sub.add_parser(name)
-        item.add_argument("--video-id", required=True)
-        item.add_argument("--model", default="gemini-3.6-flash")
+    item = sub.add_parser("prepare")
+    item.add_argument("--video-id", required=True)
+    item.add_argument("--model", default="9router")
     args = parser.parse_args()
     if args.command == "prepare":
         prepare(args)
-    elif args.command == "submit":
-        submit(args)
-    else:
-        status(args, download_result=args.command == "download")
 
 
 if __name__ == "__main__":
