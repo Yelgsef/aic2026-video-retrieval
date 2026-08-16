@@ -61,7 +61,7 @@ uv run --project environments/siglip2 python scripts/query_offline_index.py --he
 uv run --project environments/siglip2 python -m compileall -q aic_pipeline scripts
 ```
 
-Notebook minh họa được giữ tại `offline_pipeline_demo.ipynb`. Format pseudo-label nằm trong [PSEUDO_LABEL_FORMAT.md](PSEUDO_LABEL_FORMAT.md).
+Format pseudo-label và pseudo-query nằm trong [PSEUDO_LABEL_FORMAT.md](PSEUDO_LABEL_FORMAT.md).
 
 ## Cấu trúc repository
 

@@ -20,6 +20,7 @@ __pycache__/
 archive/
 workspace/
 models/
+exports/
 
 # Large media and model artifacts
 *.mp4
