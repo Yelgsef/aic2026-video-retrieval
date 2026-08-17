@@ -59,6 +59,14 @@ def main() -> None:
     parser.add_argument("--mode", choices=["default", "clean_shot"], default="default")
     parser.add_argument("--overlap", type=int, default=20)
     parser.add_argument(
+        "--decoder-backend", choices=("auto", "cpu", "nvdec"), default="auto",
+        help="auto uses NVDEC when available and otherwise falls back to the legacy CPU decoder.",
+    )
+    parser.add_argument(
+        "--prefetch-windows", type=int, default=3,
+        help="Decoded model windows buffered while CUDA inference runs.",
+    )
+    parser.add_argument(
         "--frame-limit",
         type=int,
         default=None,
@@ -80,6 +88,8 @@ def main() -> None:
         raise FileNotFoundError(input_path)
     if not checkpoint_path.exists():
         raise FileNotFoundError(checkpoint_path)
+    if args.prefetch_windows <= 0:
+        raise ValueError("--prefetch-windows must be positive")
     if not torch.cuda.is_available():
         raise RuntimeError("OmniShotCut currently requires a CUDA-enabled PyTorch runtime.")
 
@@ -98,7 +108,13 @@ def main() -> None:
     model = omnishotcut.load(str(checkpoint_path))
     torch.cuda.reset_peak_memory_stats()
     inference_started = time.time()
-    prediction = model.inference(model_input, mode=args.mode, overlap=args.overlap)
+    prediction = model.inference(
+        model_input,
+        mode=args.mode,
+        overlap=args.overlap,
+        decoder_backend=args.decoder_backend,
+        prefetch_windows=args.prefetch_windows,
+    )
     inference_seconds = time.time() - inference_started
 
     if args.mode == "clean_shot":
@@ -115,8 +131,13 @@ def main() -> None:
         "checkpoint": str(checkpoint_path),
         "mode": args.mode,
         "overlap": args.overlap,
+        "decoder_backend_requested": args.decoder_backend,
+        "decoder": model.last_inference_stats,
         "frame_limit": args.frame_limit,
-        "decoded_frame_count": frame_count,
+        "decoded_frame_count": (
+            frame_count if frame_count is not None
+            else model.last_inference_stats.get("decoded_frame_count")
+        ),
         "fps": fps,
         "ranges_end_exclusive": True,
         "ranges": ranges,
