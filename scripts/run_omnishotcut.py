@@ -67,6 +67,10 @@ def main() -> None:
         help="Decoded model windows buffered while CUDA inference runs.",
     )
     parser.add_argument(
+        "--preprocess-device", choices=("cpu", "cuda"), default="cuda",
+        help="Run inference preprocessing on CUDA (default) or use the legacy CPU path.",
+    )
+    parser.add_argument(
         "--frame-limit",
         type=int,
         default=None,
@@ -114,6 +118,7 @@ def main() -> None:
         overlap=args.overlap,
         decoder_backend=args.decoder_backend,
         prefetch_windows=args.prefetch_windows,
+        preprocess_device=args.preprocess_device,
     )
     inference_seconds = time.time() - inference_started
 
@@ -132,6 +137,7 @@ def main() -> None:
         "mode": args.mode,
         "overlap": args.overlap,
         "decoder_backend_requested": args.decoder_backend,
+        "preprocess_device_requested": args.preprocess_device,
         "decoder": model.last_inference_stats,
         "frame_limit": args.frame_limit,
         "decoded_frame_count": (

@@ -251,7 +251,7 @@ def command_for(video_id: str, stage: str) -> list[str]:
     row = videos.loc[videos.video_id == video_id].iloc[0]
     checkpoint = ROOT / "models" / "omnishotcut" / "OmniShotCut_ckpt.pth"
     commands = {
-        "omnishot": ["uv", "run", "--project", "environments/omnishotcut", "python", "scripts/run_omnishotcut.py", "--input", str(row.video_path), "--checkpoint", str(checkpoint), "--output", str(ROOT / "workspace" / "shots" / f"{video_id}.json"), "--decoder-backend", "auto", "--prefetch-windows", "3", "--force"],
+        "omnishot": ["uv", "run", "--project", "environments/omnishotcut", "python", "scripts/run_omnishotcut.py", "--input", str(row.video_path), "--checkpoint", str(checkpoint), "--output", str(ROOT / "workspace" / "shots" / f"{video_id}.json"), "--decoder-backend", "auto", "--prefetch-windows", "3", "--preprocess-device", "cuda", "--force"],
         "sampling": ["uv", "run", "--project", "environments/omnishotcut", "python", "scripts/build_sampling_manifest.py", "--video-id", video_id, "--stride", "5", "--stride-only", "--coverage-anchor-interval", "0", "--force"],
         "siglip-base": ["uv", "run", "--project", "environments/siglip2", "python", "scripts/build_siglip2_sample_index.py", "--video-id", video_id, "--model-id", "google/siglip2-base-patch16-224", "--batch-size", "16", "--unified-select", "--force"],
         "siglip-so400m-final": ["uv", "run", "--project", "environments/siglip2", "python", "scripts/build_siglip2_final_index.py", "--video-id", video_id, "--source-encoder-id", "google_siglip2_base_patch16_224", "--model-id", "google/siglip2-so400m-patch14-384", "--batch-size", "8", "--force"],
