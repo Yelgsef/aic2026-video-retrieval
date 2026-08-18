@@ -41,6 +41,13 @@ def local_state(video_id: str) -> tuple[int, int, int]:
     return counts.get("completed", 0), counts.get("failed", 0), sum(counts.values())
 
 
+def index_complete(video_id: str) -> bool:
+    directory = ROOT / "workspace" / f"offline_index_{video_id}"
+    required = ("report.json", "bge_m3_report.json", "openclip_report.json",
+                "frames.parquet", "scenes.parquet", "search.sqlite3")
+    return directory.is_dir() and all((directory / name).is_file() for name in required)
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description="Run four local shards and resumable per-video 9Router/index jobs.")
     parser.add_argument("--shard-count", type=int, default=4)
@@ -75,7 +82,9 @@ def main() -> None:
         local_workers.append(subprocess.Popen(command, cwd=ROOT, env=worker_env))
     print(f"LOCAL_WORKERS_STARTED count={len(local_workers)} videos={len(video_ids)}", flush=True)
 
-    remaining = set(video_ids)
+    completed_indexes = {video_id for video_id in video_ids if index_complete(video_id)}
+    remaining = set(video_ids) - completed_indexes
+    print(f"INDEXES_ALREADY_COMPLETE count={len(completed_indexes)} remaining={len(remaining)}", flush=True)
     retry_at: dict[str, float] = {}
     active: dict[str, subprocess.Popen[str]] = {}
     active_gpu: dict[str, int] = {}
