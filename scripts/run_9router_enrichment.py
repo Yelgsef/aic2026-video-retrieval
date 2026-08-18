@@ -5,6 +5,7 @@ import base64
 import json
 import sys
 import time
+import threading
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from io import BytesIO
 from pathlib import Path
@@ -16,6 +17,17 @@ from pydantic import BaseModel
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 from aic_pipeline.router_chat import RouterChatClient
+
+
+class QuotaExhausted(RuntimeError):
+    pass
+
+
+def is_quota_error(error: str) -> bool:
+    text = error.casefold()
+    markers = ("429", "quota", "rate limit", "rate_limit", "resource exhausted",
+               "too many requests", "limit exceeded", "capacity exceeded")
+    return any(marker in text for marker in markers)
 
 
 class OcrLine(BaseModel):
@@ -85,6 +97,8 @@ def main() -> None:
     parser.add_argument("--retries", type=int, default=4)
     parser.add_argument("--model")
     parser.add_argument("--force", action="store_true")
+    parser.add_argument("--min-interval", type=float, default=0.25,
+                        help="Minimum seconds between request starts in this process.")
     args = parser.parse_args()
     source, output, schema = paths(args.task, args.video_id)
     rows = [json.loads(line) for line in source.read_text(encoding="utf-8").splitlines() if line.strip()]
@@ -97,18 +111,28 @@ def main() -> None:
                 if item.get("key") and not item.get("error") and provider == "9router":
                     done[str(item["key"])] = item
     client = RouterChatClient(ROOT, timeout_seconds=180)
+    gate = threading.Lock()
+    next_request = [0.0]
 
     def execute(row: dict[str, Any]) -> dict[str, Any]:
         prompt, image = unpack_request(row)
         error = ""
         for attempt in range(args.retries + 1):
             try:
+                with gate:
+                    now = time.monotonic()
+                    delay = next_request[0] - now
+                    if delay > 0:
+                        time.sleep(delay)
+                    next_request[0] = time.monotonic() + max(0.0, args.min_interval)
                 token_limit = 4096 if args.task == "scenes" else 2048
                 response = client.json_response(prompt, schema, image, model=args.model,
                                                 temperature=0.1, max_tokens=token_limit)
                 return legacy_envelope(str(row["key"]), response.text, response.usage)
             except Exception as exc:
                 error = str(exc)
+                if is_quota_error(error):
+                    raise QuotaExhausted(error) from exc
                 if attempt < args.retries:
                     time.sleep(min(30, 2 ** attempt))
         # Remote normalization/OCR is supplemental. Preserve a valid, explicit
@@ -131,15 +155,19 @@ def main() -> None:
 
     pending = [row for row in rows if str(row["key"]) not in done]
     completed = dict(done)
-    with ThreadPoolExecutor(max_workers=max(1, args.workers)) as pool:
-        futures = {pool.submit(execute, row): str(row["key"]) for row in pending}
-        for index, future in enumerate(as_completed(futures), 1):
-            result = future.result()
-            completed[str(result["key"])] = result
-            output.parent.mkdir(parents=True, exist_ok=True)
-            output.write_text("".join(json.dumps(completed[str(row["key"])], ensure_ascii=False) + "\n"
-                                      for row in rows if str(row["key"]) in completed), encoding="utf-8")
-            print(f"9ROUTER_PROGRESS {args.task} {args.video_id} {len(done)+index}/{len(rows)}", flush=True)
+    try:
+        with ThreadPoolExecutor(max_workers=max(1, args.workers)) as pool:
+            futures = {pool.submit(execute, row): str(row["key"]) for row in pending}
+            for index, future in enumerate(as_completed(futures), 1):
+                result = future.result()
+                completed[str(result["key"])] = result
+                output.parent.mkdir(parents=True, exist_ok=True)
+                output.write_text("".join(json.dumps(completed[str(row["key"])], ensure_ascii=False) + "\n"
+                                          for row in rows if str(row["key"]) in completed), encoding="utf-8")
+                print(f"9ROUTER_PROGRESS {args.task} {args.video_id} {len(done)+index}/{len(rows)}", flush=True)
+    except QuotaExhausted as exc:
+        print(f"9ROUTER_QUOTA_PAUSE {exc}", file=sys.stderr, flush=True)
+        raise SystemExit(75)
     failed = sum(bool(item.get("error")) for item in completed.values())
     print(json.dumps({"task": args.task, "video_id": args.video_id, "requests": len(rows),
                       "completed": len(completed) - failed, "failed": failed,

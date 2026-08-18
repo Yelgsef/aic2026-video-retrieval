@@ -32,6 +32,8 @@ def run(command: list[str], attempts: int = 1) -> str:
             print(process.stdout.strip(), flush=True)
         if process.returncode == 0:
             return process.stdout
+        if process.returncode == 75:
+            raise SystemExit(75)
         last_error = (process.stderr or process.stdout).strip()
         print(f"COMMAND_RETRY {attempt + 1}/{attempts}: {last_error[-1000:]}", flush=True)
         time.sleep(min(60, 5 * (attempt + 1)))
@@ -96,11 +98,12 @@ def prepared_auxiliary(kind: str, video_id: str) -> bool:
 
 
 def process_9router(video_ids: tuple[str, ...], model: str | None, workers: int,
-                    force: bool = False) -> None:
+                    force: bool = False, min_interval: float = 0.25) -> None:
     for video_id in video_ids:
         run(["uv", "run", "--project", "environments/gemini", "python",
              "scripts/run_9router_enrichment.py", "--task", "scenes",
-             "--video-id", video_id, "--workers", str(workers)]
+             "--video-id", video_id, "--workers", str(workers),
+             "--min-interval", str(min_interval)]
             + (["--force"] if force else [])
             + (["--model", model] if model else []), attempts=3)
         for kind in ("asr-normalize", "ocr-crops"):
@@ -109,7 +112,8 @@ def process_9router(video_ids: tuple[str, ...], model: str | None, workers: int,
                 continue
             run(["uv", "run", "--project", "environments/gemini", "python",
                  "scripts/run_9router_enrichment.py", "--task", kind,
-                 "--video-id", video_id, "--workers", str(workers)]
+                 "--video-id", video_id, "--workers", str(workers),
+                 "--min-interval", str(min_interval)]
                 + (["--force"] if force else [])
                 + (["--model", model] if model else []), attempts=3)
 
@@ -152,6 +156,8 @@ def main() -> None:
     parser.add_argument("--video-id", action="append", dest="video_ids")
     parser.add_argument("--model", help="Override NINEROUTER_MODEL from .env")
     parser.add_argument("--workers", type=int, default=8)
+    parser.add_argument("--min-interval", type=float, default=0.25,
+                        help="Minimum seconds between 9Router request starts per process.")
     parser.add_argument("--force-router", action="store_true",
                         help="Regenerate every 9Router response instead of resuming old output.")
     parser.add_argument("--poll-seconds", type=int, default=300)
@@ -163,7 +169,7 @@ def main() -> None:
     args = parser.parse_args()
     video_ids = tuple(args.video_ids or DEFAULT_VIDEO_IDS)
     wait_for_local(video_ids, max(30, args.poll_seconds))
-    process_9router(video_ids, args.model, args.workers, args.force_router)
+    process_9router(video_ids, args.model, args.workers, args.force_router, args.min_interval)
     build_documents_and_index(video_ids, args.output)
     report = {"status": "complete", "video_ids": list(video_ids),
               "index": str(args.output.resolve()), "model": args.model}
