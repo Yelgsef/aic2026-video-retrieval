@@ -11,6 +11,7 @@ from pathlib import Path
 import pandas as pd
 
 ROOT = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(ROOT / "scripts"))
 DB_PATH = ROOT / "workspace" / "scheduler" / "jobs.sqlite3"
 LOCAL_STAGES = (
     "omnishot", "sampling", "siglip-base", "siglip-so400m-final",
@@ -27,7 +28,7 @@ def ids_from_manifest() -> list[str]:
 def local_state(video_id: str) -> tuple[int, int, int]:
     if not DB_PATH.exists():
         return 0, 0, len(LOCAL_STAGES)
-    from scripts.run_dataset_scheduler import configuration_hash
+    from run_dataset_scheduler import configuration_hash
     config = configuration_hash()
     db = sqlite3.connect(DB_PATH)
     marks = ",".join("?" for _ in LOCAL_STAGES)
