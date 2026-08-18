@@ -27,11 +27,13 @@ def ids_from_manifest() -> list[str]:
 def local_state(video_id: str) -> tuple[int, int, int]:
     if not DB_PATH.exists():
         return 0, 0, len(LOCAL_STAGES)
+    from scripts.run_dataset_scheduler import configuration_hash
+    config = configuration_hash()
     db = sqlite3.connect(DB_PATH)
     marks = ",".join("?" for _ in LOCAL_STAGES)
     rows = db.execute(
-        f"SELECT status,COUNT(*) FROM jobs WHERE video_id=? AND stage IN ({marks}) GROUP BY status",
-        (video_id, *LOCAL_STAGES),
+        f"SELECT status,COUNT(*) FROM jobs WHERE video_id=? AND config_hash=? AND stage IN ({marks}) GROUP BY status",
+        (video_id, config, *LOCAL_STAGES),
     ).fetchall()
     db.close()
     counts = {str(status): int(count) for status, count in rows}
