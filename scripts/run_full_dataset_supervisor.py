@@ -65,7 +65,9 @@ def main() -> None:
     local_workers: list[subprocess.Popen[str]] = []
     for shard in range(args.shard_count):
         command = [*scheduler, str(shard), "--worker-id", f"full-supervisor:{shard}"]
-        local_workers.append(subprocess.Popen(command, cwd=ROOT, env=env))
+        worker_env = env.copy()
+        worker_env["CUDA_VISIBLE_DEVICES"] = str(shard)
+        local_workers.append(subprocess.Popen(command, cwd=ROOT, env=worker_env))
     print(f"LOCAL_WORKERS_STARTED count={len(local_workers)} videos={len(video_ids)}", flush=True)
 
     remaining = set(video_ids)
