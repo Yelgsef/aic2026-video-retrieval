@@ -44,6 +44,8 @@ def main() -> None:
     parser.add_argument("--video-ids", nargs="*", default=[])
     parser.add_argument("--model", default=None)
     parser.add_argument("--gemini-workers", type=int, default=4)
+    parser.add_argument("--gemini-concurrency", type=int, default=4,
+                        help="Maximum videos being enriched/indexed concurrently.")
     parser.add_argument("--min-interval", type=float, default=0.5)
     parser.add_argument("--quota-wait", type=int, default=1800)
     parser.add_argument("--retry-wait", type=int, default=300)
@@ -72,11 +74,10 @@ def main() -> None:
 
     remaining = set(video_ids)
     retry_at: dict[str, float] = {}
-    active: tuple[str, subprocess.Popen[str]] | None = None
+    active: dict[str, subprocess.Popen[str]] = {}
     try:
-        while remaining or active is not None:
-            if active is not None:
-                video_id, process = active
+        while remaining or active:
+            for video_id, process in list(active.items()):
                 code = process.poll()
                 if code is not None:
                     if code == 0:
@@ -88,11 +89,13 @@ def main() -> None:
                     else:
                         retry_at[video_id] = time.time() + args.retry_wait
                         print(f"GEMINI_RETRY {video_id} code={code} seconds={args.retry_wait}", flush=True)
-                    active = None
-            if active is None:
+                    del active[video_id]
+            while len(active) < max(1, args.gemini_concurrency):
                 now = time.time()
                 ready = []
                 for video_id in sorted(remaining):
+                    if video_id in active:
+                        continue
                     completed, failed, total = local_state(video_id)
                     if failed:
                         print(f"LOCAL_FAILED {video_id} completed={completed} failed={failed}", flush=True)
@@ -109,8 +112,10 @@ def main() -> None:
                     if args.model:
                         command.extend(["--model", args.model])
                     print(f"GEMINI_START {video_id}", flush=True)
-                    active = video_id, subprocess.Popen(command, cwd=ROOT, env=env)
-            if remaining or active is not None:
+                    active[video_id] = subprocess.Popen(command, cwd=ROOT, env=env)
+                else:
+                    break
+            if remaining or active:
                 time.sleep(max(5, args.poll_seconds))
     finally:
         for process in local_workers:
