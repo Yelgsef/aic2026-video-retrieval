@@ -116,6 +116,12 @@ def initialize(connection: sqlite3.Connection, shard_count: int) -> int:
                     (row.video_id, stage, config, index % shard_count),
                 )
                 inserted += cursor.rowcount
+            # Existing databases may have been initialized with one shard.
+            # Rebalance them when a multi-GPU run requests a new shard count.
+            connection.execute(
+                "UPDATE jobs SET shard=? WHERE video_id=? AND config_hash=?",
+                (index % shard_count, row.video_id, config),
+            )
     return inserted
 
 
