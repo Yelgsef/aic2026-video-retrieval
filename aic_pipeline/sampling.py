@@ -138,6 +138,11 @@ def build_video_sampling_manifest(
     # OmniShotCut ranges describe frames that were actually decoded, so use
     # that count rather than manufacturing an unreadable final frame.
     frame_count = decoded_frame_count
+    # A few OmniShotCut outputs contain the final frame index rather than the
+    # half-open endpoint. Normalize this one-frame discrepancy.
+    if ranges and int(ranges[-1][1]) == frame_count - 1:
+        ranges = [list(value) for value in ranges]
+        ranges[-1][1] = frame_count
     fps = float(video["fps"])
 
     rows: list[dict[str, Any]] = []
