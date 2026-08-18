@@ -75,6 +75,7 @@ def main() -> None:
     remaining = set(video_ids)
     retry_at: dict[str, float] = {}
     active: dict[str, subprocess.Popen[str]] = {}
+    active_gpu: dict[str, int] = {}
     try:
         while remaining or active:
             for video_id, process in list(active.items()):
@@ -90,6 +91,7 @@ def main() -> None:
                         retry_at[video_id] = time.time() + args.retry_wait
                         print(f"GEMINI_RETRY {video_id} code={code} seconds={args.retry_wait}", flush=True)
                     del active[video_id]
+                    active_gpu.pop(video_id, None)
             while len(active) < max(1, args.gemini_concurrency):
                 now = time.time()
                 ready = []
@@ -112,7 +114,12 @@ def main() -> None:
                     if args.model:
                         command.extend(["--model", args.model])
                     print(f"GEMINI_START {video_id}", flush=True)
-                    active[video_id] = subprocess.Popen(command, cwd=ROOT, env=env)
+                    slot = next((gpu for gpu in range(args.shard_count)
+                                 if gpu not in active_gpu.values()), 0)
+                    child_env = env.copy()
+                    child_env["CUDA_VISIBLE_DEVICES"] = str(slot)
+                    active[video_id] = subprocess.Popen(command, cwd=ROOT, env=child_env)
+                    active_gpu[video_id] = slot
                 else:
                     break
             if remaining or active:
