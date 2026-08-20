@@ -3,6 +3,7 @@ from __future__ import annotations
 import argparse
 import json
 import mimetypes
+import os
 import sys
 import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -39,7 +40,7 @@ def main() -> None:
     video_paths = {str(row.video_id): Path(row.video_path).resolve() for row in manifest.itertuples()}
     frame_cache = ROOT / "workspace" / "ui_frame_cache"
     frame_cache.mkdir(parents=True, exist_ok=True)
-    qa_engine = [None]
+    qa_engine: dict[str, GeminiQAEngine] = {}
     temporal_aligner = [None]
     kis_frame_cache: dict[str, pd.DataFrame] = {}
     warmup_seconds = 0.0
@@ -180,10 +181,14 @@ def main() -> None:
                     answer = (local_exact_ocr_answer(ROOT, question, retrieval["results"][0])
                               if retrieval["results"] else None)
                     if answer is None:
-                        if qa_engine[0] is None:
-                            qa_engine[0] = GeminiQAEngine(ROOT)
-                        answer = qa_engine[0].answer(question, retrieval["results"],
+                        gemini_mode = str(request.get("gemini_mode", os.getenv("GEMINI_MODE", "9router"))).strip().lower()
+                        if gemini_mode not in {"9router", "gemini_api"}:
+                            raise ValueError("gemini_mode must be 9router or gemini_api")
+                        if gemini_mode not in qa_engine:
+                            qa_engine[gemini_mode] = GeminiQAEngine(ROOT, mode=gemini_mode)
+                        answer = qa_engine[gemini_mode].answer(question, retrieval["results"],
                                                      vqa_candidates)
+                        answer["gemini_mode"] = gemini_mode
                     answer_variants = [answer.get("answer", "")]
                     if (answer.get("first_answer") and
                             answer.get("first_answer") != answer.get("answer")):

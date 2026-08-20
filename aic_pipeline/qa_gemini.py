@@ -15,7 +15,7 @@ from pydantic import BaseModel, Field
 
 from .object_grounding import GroundingDinoCropper
 from .qa_reasoning import answers_equivalent, classify_question, temporal_frame_ids
-from .router_chat import RouterChatClient
+from .router_chat import GeminiApiClient, RouterChatClient
 
 
 class QASelection(BaseModel):
@@ -27,8 +27,9 @@ class QASelection(BaseModel):
 
 class QAAnswerSelection(BaseModel):
     candidate_label: str = Field(description="Exactly one candidate label, for example C1")
-    answer: str = Field(min_length=1, description="Short non-empty answer; use UNCERTAIN if illegible")
-    evidence_vi: str
+    answer: str = Field(min_length=1, max_length=240,
+                        description="Short non-empty answer; use UNCERTAIN if illegible")
+    evidence_vi: str = Field(max_length=500, description="One short Vietnamese evidence sentence")
     confidence: float = Field(ge=0, le=1)
 
 
@@ -95,10 +96,14 @@ def local_exact_ocr_answer(root: Path, question: str,
 
 class GeminiQAEngine:
     def __init__(self, root: Path, model: str | None = None,
-                 request_timeout_ms: int = 90_000) -> None:
+                 request_timeout_ms: int = 90_000, mode: str | None = None) -> None:
         self.root = root.resolve()
         load_dotenv(self.root / ".env")
-        self.client = RouterChatClient(self.root, request_timeout_ms / 1000)
+        self.mode = (mode or os.getenv("GEMINI_MODE", "9router")).strip().lower()
+        if self.mode not in {"9router", "gemini_api"}:
+            raise ValueError("GEMINI_MODE must be 9router or gemini_api")
+        client_type = GeminiApiClient if self.mode == "gemini_api" else RouterChatClient
+        self.client = client_type(self.root, request_timeout_ms / 1000)
         self.model = model or self.client.model
         self.manifest = pd.read_parquet(self.root / "workspace" / "manifests" / "videos.parquet").set_index("video_id")
         self._grounder: GroundingDinoCropper | bool | None = None
@@ -255,6 +260,7 @@ Rules:
 - Retrieval rank is a useful prior: prefer evidence from a better-ranked scene when visual evidence is comparable.
 - Do not use outside knowledge or infer hidden information.
 - Keep answer short and in Vietnamese or English.
+- evidence_vi must be one short sentence (at most 200 characters).
 - If the answer is unclear, choose the best candidate but set confidence below 0.5 and explain the uncertainty.
 """
         response, used_model, last_error = None, self.model, None
@@ -276,7 +282,7 @@ Semantic topic similarity alone is not sufficient. A frame about the same topic 
                         first_schema = QASceneShortlist
                     response = self.client.json_response(
                         first_prompt, first_schema, sheet, model=model,
-                        temperature=0.1, max_tokens=1024)
+                        temperature=0.1, max_tokens=2048)
                     used_model = model
                     break
                 except Exception as exc:
@@ -445,7 +451,7 @@ candidate_label must be one of {', '.join(detail_mapping)}. Keep the answer shor
                 try:
                     detail_response = self.client.json_response(
                         detail_prompt, QAAnswerSelection, detail_sheet, model=used_model,
-                        temperature=0.0, max_tokens=1024)
+                        temperature=0.0, max_tokens=2048)
                     refined = QAAnswerSelection.model_validate_json(detail_response.text)
                     refined_label = refined.candidate_label.strip().upper()
                     if refined_label in detail_mapping:

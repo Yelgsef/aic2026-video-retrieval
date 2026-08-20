@@ -81,6 +81,9 @@ Tạo .env và không commit:
 NINEROUTER_CHAT_URL=https://router.studev.net/v1/chat/completions
 NINEROUTER_MODEL=ag/gemini-3-flash-agent
 NINEROUTER_KEY=<key-neu-router-yeu-cau>
+GEMINI_MODE=9router
+GEMINI_API_KEY=<key-neu-dung-gemini-api>
+GEMINI_API_MODEL=gemini-2.5-flash
 ~~~
 
 ~~~bash
@@ -90,6 +93,9 @@ curl -sS -H "Authorization: Bearer $NINEROUTER_KEY" "https://router.studev.net/v
 
 9Router dùng cho Gemini enrichment và QA online; BGE-M3, SigLIP2, OpenCLIP
 và Qwen có thể chạy local.
+
+QA hỗ trợ hai mode: `9router` (mặc định) và `gemini_api`. Mode được chọn theo
+từng request, không cần restart hoặc embed lại.
 
 ## Backend HTTP
 
@@ -130,6 +136,16 @@ curl -X POST http://127.0.0.1:8765/answer -H "Content-Type: application/json" -d
 
 QA cần model/credential Gemini qua 9Router. UNCERTAIN thường do chữ quá nhỏ
 hoặc bằng chứng hình ảnh yếu, không nhất thiết phải embed lại.
+
+Gọi trực tiếp Gemini API thay vì 9Router:
+
+~~~bash
+curl -X POST http://127.0.0.1:8765/answer -H "Content-Type: application/json" -d '{"query":"Dòng chữ nào trong cuốn sách được in đỏ?","gemini_mode":"gemini_api","vqa_candidates":12,"query_transformer":true}'
+~~~
+
+Request không có `gemini_mode` dùng `GEMINI_MODE` trong `.env`, mặc định là
+`9router`. Mode `gemini_api` cần `GEMINI_API_KEY`; mode `9router` cần các biến
+`NINEROUTER_*` tương ứng.
 
 ## Query TRAKE
 
@@ -210,4 +226,3 @@ dim 768. Mỗi vector cần video_id, scene_index/frame_id, timestamp và ID.
 - Offline index đủ cho retrieval; QA cần thêm code, evidence video/frame,
   Gemini/9Router và Qwen nếu muốn query expansion.
 - Không chia sẻ Google account; thêm email cộng tác viên qua IAM project.
-
