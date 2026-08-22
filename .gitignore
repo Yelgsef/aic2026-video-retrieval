@@ -21,6 +21,7 @@ archive/
 workspace/
 models/
 exports/
+temp_index_check/
 
 # Large media and model artifacts
 *.mp4

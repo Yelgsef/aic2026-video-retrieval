@@ -79,16 +79,6 @@ def parse_state(output: str) -> str:
         return ""
 
 
-def batch_command(kind: str, action: str, video_id: str, model: str) -> list[str]:
-    if kind == "scenes":
-        return ["uv", "run", "--project", "environments/gemini", "python",
-                "scripts/gemini_batch_scenes.py", action, "--video-id", video_id,
-                "--model", model]
-    return ["uv", "run", "--project", "environments/gemini", "python",
-            "scripts/gemini_batch_generic.py", action, "--task", kind,
-            "--video-id", video_id, "--model", model]
-
-
 def prepared_auxiliary(kind: str, video_id: str) -> bool:
     if kind == "asr-normalize":
         path = ROOT / "workspace/asr_normalization" / video_id / "requests.jsonl"

@@ -6,6 +6,14 @@ Hệ thống xử lý video offline và cung cấp backend/frontend cho ba dạn
 - QA: tìm bằng chứng rồi trả lời bằng Gemini qua 9Router.
 - TRAKE: tìm chuỗi sự kiện theo đúng thứ tự thời gian.
 
+## Tài liệu
+
+- [`PIPELINE.md`](PIPELINE.md): thiết kế pipeline, model, fusion và đường xử lý KIS/QA/TRAKE.
+- [`docs/REPOSITORY_GUIDE.md`](docs/REPOSITORY_GUIDE.md): bản đồ toàn bộ repository, artifact và cách vận hành/resume.
+- [`scripts/README.md`](scripts/README.md): phân loại các script production, build, validation và utility.
+- [`PSEUDO_LABEL_FORMAT.md`](PSEUDO_LABEL_FORMAT.md): định dạng nhãn đánh giá KIS/QA/TRAKE.
+- [`docs/QWEN_BACKEND.md`](docs/QWEN_BACKEND.md): cấu hình Query Transformer local.
+
 ## Kiến trúc
 
 ~~~text
@@ -16,6 +24,33 @@ Video -> OmniShotCut/sampling -> SigLIP2/ASR/OCR/YOLO/semantic scenes
 ~~~
 
 Qwen chỉ phân tích query lúc truy vấn; bật Qwen không yêu cầu embed lại.
+
+## Entrypoint chính
+
+- `scripts/run_dataset_scheduler.py`: chạy và resume các stage offline theo video.
+- `scripts/run_full_dataset_supervisor.py`: điều phối nhiều GPU và enrichment qua 9Router.
+- `scripts/run_gemini_subset_supervisor.py`: supervisor enrichment/index cho một tập video. Tên file được giữ để tương thích lệnh cũ; luồng hiện tại gọi 9Router, không phải Gemini Batch API.
+- `scripts/serve_offline_query.py`: backend KIS, QA và TRAKE.
+- `scripts/query_offline_index.py`: truy vấn index bằng CLI.
+
+Các script còn lại thuộc nhóm build artifact hoặc validation. Xem `scripts/README.md` trước khi chạy riêng từng stage.
+
+## Trạng thái model production
+
+| Chức năng | Model/backend |
+|---|---|
+| Shot boundary | OmniShotCut |
+| Candidate visual encoder | SigLIP2 Base 224 |
+| Final visual encoder | SigLIP2 SO400M 384 |
+| Visual ensemble | OpenCLIP ViT-L/14 |
+| Speech-to-text | Faster-Whisper large-v3 |
+| OCR local | PP-OCR |
+| Object evidence | YOLO-World; GroundingDINO dùng có điều kiện trong QA |
+| Scene/text vectors | BGE-M3 |
+| Query understanding | Qwen2.5 1.5B local, tùy chọn |
+| VLM enrichment/QA | Gemini qua 9Router; direct Gemini API là backend lựa chọn |
+
+BEiT-3 và pipeline CLIP cũ đã được loại khỏi repository vì không còn thuộc luồng production.
 
 ## Cài đặt
 

@@ -45,7 +45,6 @@ Thiết kế này tránh hai cực đoan: chỉ giữ một medoid khiến mất
 - SigLIP2 Base 224: embedding ứng viên nhanh.
 - SigLIP2 SO400M 384: embedding final và retriever hình ảnh chính.
 - OpenCLIP ViT-L/14: nhánh ensemble độc lập, chỉ bật khi index có vectors tương ứng.
-- BEiT-3: baseline/ablation cũ vẫn được hỗ trợ nhưng không còn là retriever production chính.
 
 ## 3. Audio, OCR và object evidence
 
@@ -182,19 +181,10 @@ Không rebuild toàn dataset chỉ để thêm một video đã có final embedd
 
 R@K chỉ cho biết scene đúng có nằm trong K kết quả đầu hay không. Tăng K có thể tăng recall nhưng cũng tăng nhiễu; QA chỉ nên mở rộng có kiểm soát và dựa trên evidence type.
 
-## 11. Index kiểm thử hiện tại
-
-`workspace/offline_index_queries10` chứa 10 video QA kiểm thử, 659 scenes và 3.663 visual frame embeddings. Index này dùng SigLIP2 SO400M + BGE-M3; chưa có OpenCLIP nhưng server tự fallback.
-
-Regression đã xác nhận:
-
-- `L27_V003`, scene 68, frame 11101: “Cây quỷnh”.
-- `L28_V001`, scene 19, frame 5020: “Sống cùng nước”.
-
-## 12. Chạy dịch vụ
+## 11. Chạy dịch vụ
 
 ```cmd
-uv run --project environments/siglip2 python scripts/serve_offline_query.py --index workspace/offline_index_queries10
+uv run --project environments/siglip2 python scripts/serve_offline_query.py --index workspace/offline_index_all_873
 ```
 
 Mở `http://127.0.0.1:8765`. Cần restart server sau khi đổi code hoặc index vì dữ liệu/model được nạp và giữ trong RAM.

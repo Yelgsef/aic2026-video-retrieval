@@ -8,7 +8,7 @@ import pandas as pd
 
 ROOT = Path(__file__).resolve().parents[1]
 VIDEO_ID = "L21_V001"
-ENCODER_ID = "timm_beit3_base_patch16_224_pt"
+ENCODER_ID = "google_siglip2_base_patch16_224"
 
 
 def main() -> None:
