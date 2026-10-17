@@ -129,7 +129,7 @@ def artifact_valid(video_id: str, stage: str) -> bool:
     try:
         if stage == "omnishot":
             value = json.loads((ROOT / "workspace" / "shots" / f"{video_id}.json").read_text(encoding="utf-8"))
-            return value.get("shot_count", 0) > 0 and bool(value.get("ranges"))
+            return len(value.get("ranges") or []) > 0
         if stage == "sampling":
             table = pd.read_parquet(ROOT / "workspace" / "samples" / f"{video_id}.parquet")
             return len(table) > 0 and not table.frame_id.duplicated().any()

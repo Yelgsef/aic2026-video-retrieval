@@ -3,42 +3,13 @@ from __future__ import annotations
 import argparse
 import json
 import os
-import time
 from pathlib import Path
 
-import cv2
-import numpy as np
 import torch
 
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 DEFAULT_CHECKPOINT = PROJECT_ROOT / "models" / "omnishotcut" / "OmniShotCut_ckpt.pth"
-LOCAL_FFMPEG_DIR = PROJECT_ROOT / "tools" / "ffmpeg"
-
-
-def configure_ffmpeg() -> None:
-    ffmpeg_executable = LOCAL_FFMPEG_DIR / "ffmpeg.exe"
-    if ffmpeg_executable.exists():
-        os.environ["PATH"] = f"{LOCAL_FFMPEG_DIR}{os.pathsep}{os.environ.get('PATH', '')}"
-
-
-def read_prefix_frames(video_path: Path, frame_limit: int) -> tuple[np.ndarray, float]:
-    capture = cv2.VideoCapture(str(video_path))
-    if not capture.isOpened():
-        raise RuntimeError(f"Cannot open video: {video_path}")
-    fps = float(capture.get(cv2.CAP_PROP_FPS))
-    frames: list[np.ndarray] = []
-    try:
-        for _ in range(frame_limit):
-            ok, bgr = capture.read()
-            if not ok:
-                break
-            frames.append(cv2.cvtColor(bgr, cv2.COLOR_BGR2RGB))
-    finally:
-        capture.release()
-    if not frames:
-        raise RuntimeError(f"Decoded zero frames from: {video_path}")
-    return np.stack(frames), fps
 
 
 def atomic_json(data: dict, destination: Path) -> None:
@@ -70,12 +41,6 @@ def main() -> None:
         "--preprocess-device", choices=("cpu", "cuda"), default="cuda",
         help="Run inference preprocessing on CUDA (default) or use the legacy CPU path.",
     )
-    parser.add_argument(
-        "--frame-limit",
-        type=int,
-        default=None,
-        help="Only decode the first N frames. Intended for smoke tests.",
-    )
     parser.add_argument("--force", action="store_true")
     args = parser.parse_args()
 
@@ -97,31 +62,17 @@ def main() -> None:
     if not torch.cuda.is_available():
         raise RuntimeError("OmniShotCut currently requires a CUDA-enabled PyTorch runtime.")
 
-    configure_ffmpeg()
     import omnishotcut
 
-    started = time.time()
-    fps = None
-    frame_count = None
-    if args.frame_limit:
-        model_input, fps = read_prefix_frames(input_path, args.frame_limit)
-        frame_count = len(model_input)
-    else:
-        model_input = str(input_path)
-
     model = omnishotcut.load(str(checkpoint_path))
-    torch.cuda.reset_peak_memory_stats()
-    inference_started = time.time()
     prediction = model.inference(
-        model_input,
+        str(input_path),
         mode=args.mode,
         overlap=args.overlap,
         decoder_backend=args.decoder_backend,
         prefetch_windows=args.prefetch_windows,
         preprocess_device=args.preprocess_device,
     )
-    inference_seconds = time.time() - inference_started
-
     if args.mode == "clean_shot":
         ranges = prediction
         intra_labels = None
@@ -129,33 +80,15 @@ def main() -> None:
     else:
         ranges, intra_labels, inter_labels = prediction
 
+    decoded_frame_count = model.last_inference_stats.get("decoded_frame_count")
     result = {
-        "pipeline_version": "0.1.0",
-        "detector": "omnishotcut",
-        "input_video": str(input_path),
-        "checkpoint": str(checkpoint_path),
-        "mode": args.mode,
-        "overlap": args.overlap,
-        "decoder_backend_requested": args.decoder_backend,
-        "preprocess_device_requested": args.preprocess_device,
-        "decoder": model.last_inference_stats,
-        "frame_limit": args.frame_limit,
-        "decoded_frame_count": (
-            frame_count if frame_count is not None
-            else model.last_inference_stats.get("decoded_frame_count")
-        ),
-        "fps": fps,
+        "decoded_frame_count": decoded_frame_count,
         "ranges_end_exclusive": True,
         "ranges": ranges,
         "intra_labels": intra_labels,
         "inter_labels": inter_labels,
-        "shot_count": len(ranges),
-        "inference_seconds": round(inference_seconds, 3),
-        "total_seconds": round(time.time() - started, 3),
-        "peak_vram_mb": round(torch.cuda.max_memory_allocated() / 1024 / 1024, 2),
     }
     atomic_json(result, output_path)
-    print(json.dumps(result, ensure_ascii=False, indent=2))
     print(f"Saved: {output_path}")
 
 
