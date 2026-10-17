@@ -113,10 +113,6 @@ def build_video_sampling_manifest(
 
     shot_data = json.loads(shot_json_path.read_text(encoding="utf-8"))
     ranges = shot_data.get("ranges") or []
-    intra_labels = shot_data.get("intra_labels") or [None] * len(ranges)
-    inter_labels = shot_data.get("inter_labels") or [None] * len(ranges)
-    if len(intra_labels) != len(ranges) or len(inter_labels) != len(ranges):
-        raise ValueError("Shot ranges and label counts do not match")
     if not shot_data.get("ranges_end_exclusive", False):
         raise ValueError("Expected half-open OmniShotCut ranges [start, end)")
 
@@ -146,9 +142,7 @@ def build_video_sampling_manifest(
     fps = float(video["fps"])
 
     rows: list[dict[str, Any]] = []
-    for shot_id, ((start_frame, end_frame), intra_label, inter_label) in enumerate(
-        zip(ranges, intra_labels, inter_labels)
-    ):
+    for shot_id, (start_frame, end_frame) in enumerate(ranges):
         start_frame = int(start_frame)
         end_frame = int(end_frame)
         for sample in sample_shot(
@@ -165,18 +159,14 @@ def build_video_sampling_manifest(
                     "shot_id": shot_id,
                     "shot_start_frame": start_frame,
                     "shot_end_frame_exclusive": end_frame,
-                    "shot_length": end_frame - start_frame,
                     "frame_id": sample["frame_id"],
                     "pts_time": sample["frame_id"] / fps,
                     "sampling_reason": sample["sampling_reason"],
                     "is_mandatory": sample["is_mandatory"],
-                    "intra_label": intra_label,
-                    "inter_label": inter_label,
                 }
             )
 
     samples = pd.DataFrame(rows).sort_values(["frame_id", "shot_id"]).reset_index(drop=True)
-    samples.insert(0, "sample_id", range(len(samples)))
 
     invalid_ranges = samples.loc[
         (samples["frame_id"] < samples["shot_start_frame"])

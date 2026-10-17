@@ -155,7 +155,7 @@ Service trả response cho frontend. `/frame` giải mã và cache JPEG từ vid
 |---|---|---|---|
 | Dataset audit | `archive/video/**/*.mp4` | `workspace/manifests/videos.parquet` (8 columns); `workspace/reports/dataset_audit.json` | Canonical video IDs, paths, FPS, frame counts, duration, readability, duplicate count and file size. |
 | Shot detection | video path from manifest; OmniShotCut checkpoint under `models/` | `workspace/shots/{video_id}.json` | Half-open shot ranges `[start, end)`, labels and decoded frame count for downstream validation. |
-| Sampling | shot JSON and video manifest | `workspace/samples/{video_id}.parquet` | Per-frame IDs, shot IDs, timestamps and sampling reasons; production scheduler uses stride 5. |
+| Sampling | shot JSON and video manifest | `workspace/samples/{video_id}.parquet` | Per-frame IDs, shot IDs, shot boundaries, timestamps and sampling reasons; production uses stride 5 plus each shot's start, middle and end anchors. |
 | SigLIP2 Base | sampled frames and source video | `workspace/retrieval/google_siglip2_base_patch16_224/{video_id}_samples/` | Dense candidate embeddings plus matching metadata/config. |
 | Adaptive keyframe selection | dense Base embeddings + metadata | `workspace/keyframes/{encoder_id}/{video_id}.parquet`, `.audit.parquet`, `.f16.npy`; `workspace/reports/keyframes_*.json` | Selects chunk medoids, removes redundancy and fills temporal coverage gaps. |
 | Base unified index | selected keyframes and dense Base features | `workspace/retrieval/{base}/{video_id}_unified/`; `workspace/features/{base}/{video_id}.parquet` and `.f16.npy` | Unified path keeps stride-5 Base features for later temporal refinement and a compact visual index for selected frames. |

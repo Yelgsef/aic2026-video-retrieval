@@ -39,6 +39,8 @@ def configuration_hash() -> str:
     payload = {
         "pipeline_version": "0.5.0",
         "sampling_stride": 5,
+        "sampling_include_anchors": True,
+        "sampling_boundary_radius": 0,
         "sampling_fixed_coverage_anchor": 0,
         "temporal_chunk_frames": 67,
         "temporal_chunk_overlap": 10,
@@ -132,7 +134,14 @@ def artifact_valid(video_id: str, stage: str) -> bool:
             return len(value.get("ranges") or []) > 0
         if stage == "sampling":
             table = pd.read_parquet(ROOT / "workspace" / "samples" / f"{video_id}.parquet")
-            return len(table) > 0 and not table.frame_id.duplicated().any()
+            report = json.loads((ROOT / "workspace" / "reports" / f"sampling_{video_id}.json").read_text(encoding="utf-8"))
+            removed_columns = {"sample_id", "shot_length", "intra_label", "inter_label"}
+            return (len(table) > 0 and not table.frame_id.duplicated().any()
+                    and removed_columns.isdisjoint(table.columns)
+                    and report.get("stride") == 5
+                    and report.get("include_anchors") is True
+                    and report.get("boundary_radius") == 0
+                    and report.get("coverage_anchor_interval") == 0)
         if stage == "siglip-base":
             directory = ROOT / "workspace" / "retrieval" / "google_siglip2_base_patch16_224" / f"{video_id}_unified"
             vectors = np.load(directory / "embeddings.npy", mmap_mode="r")
@@ -258,7 +267,7 @@ def command_for(video_id: str, stage: str) -> list[str]:
     checkpoint = ROOT / "models" / "omnishotcut" / "OmniShotCut_ckpt.pth"
     commands = {
         "omnishot": ["uv", "run", "--project", "environments/omnishotcut", "python", "scripts/run_omnishotcut.py", "--input", str(row.video_path), "--checkpoint", str(checkpoint), "--output", str(ROOT / "workspace" / "shots" / f"{video_id}.json"), "--decoder-backend", "auto", "--prefetch-windows", "3", "--preprocess-device", "cuda", "--force"],
-        "sampling": ["uv", "run", "--project", "environments/omnishotcut", "python", "scripts/build_sampling_manifest.py", "--video-id", video_id, "--stride", "5", "--stride-only", "--coverage-anchor-interval", "0", "--force"],
+        "sampling": ["uv", "run", "--project", "environments/omnishotcut", "python", "scripts/build_sampling_manifest.py", "--video-id", video_id, "--stride", "5", "--boundary-radius", "0", "--coverage-anchor-interval", "0", "--force"],
         "siglip-base": ["uv", "run", "--project", "environments/siglip2", "python", "scripts/build_siglip2_sample_index.py", "--video-id", video_id, "--model-id", "google/siglip2-base-patch16-224", "--batch-size", "16", "--unified-select", "--force"],
         "siglip-so400m-final": ["uv", "run", "--project", "environments/siglip2", "python", "scripts/build_siglip2_final_index.py", "--video-id", video_id, "--source-encoder-id", "google_siglip2_base_patch16_224", "--model-id", "google/siglip2-so400m-patch14-384", "--batch-size", "8", "--force"],
         "asr-large-v3": ["uv", "run", "--project", "environments/asr", "python", "scripts/transcribe_faster_whisper.py", "--video-id", video_id, "--model", "large-v3", "--device", "cuda", "--compute-type", "float16", "--beam-size", "1", "--force"],
