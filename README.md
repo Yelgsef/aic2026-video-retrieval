@@ -9,6 +9,7 @@ Hệ thống xử lý video offline và cung cấp backend/frontend cho ba dạn
 ## Tài liệu
 
 - [`PIPELINE.md`](PIPELINE.md): thiết kế pipeline, model, fusion và đường xử lý KIS/QA/TRAKE.
+- [`docs/DATA_FLOW_AND_STORAGE.md`](docs/DATA_FLOW_AND_STORAGE.md): sơ đồ chia theo flow và artifact được tạo/đọc ở từng bước.
 - [`docs/REPOSITORY_GUIDE.md`](docs/REPOSITORY_GUIDE.md): bản đồ toàn bộ repository, artifact và cách vận hành/resume.
 - [`scripts/README.md`](scripts/README.md): phân loại các script production, build, validation và utility.
 - [`PSEUDO_LABEL_FORMAT.md`](PSEUDO_LABEL_FORMAT.md): định dạng nhãn đánh giá KIS/QA/TRAKE.

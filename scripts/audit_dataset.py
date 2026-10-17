@@ -15,7 +15,7 @@ from aic_pipeline.paths import PipelinePaths
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
-        description="Audit AIC video/keyframe/CLIP/object artifacts and build manifests."
+        description="Audit AIC videos and build the video manifest."
     )
     parser.add_argument(
         "--root",
