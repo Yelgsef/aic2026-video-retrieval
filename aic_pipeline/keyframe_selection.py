@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import math
-import time
 from collections import Counter
 from pathlib import Path
 from typing import Any
@@ -9,7 +8,7 @@ from typing import Any
 import numpy as np
 import pandas as pd
 
-from .io import atomic_write_json, atomic_write_parquet
+from .io import atomic_write_parquet
 from .paths import PipelinePaths
 
 
@@ -132,18 +131,13 @@ def select_video_keyframes(
     coverage_window_frames: int = 103,
     evidence_manifest_path: Path | None = None,
     force: bool = False,
-    report_output_path: Path | None = None,
 ) -> dict[str, Any]:
-    started = time.time()
     feature_dir = paths.features / encoder_id
     matrix_path = feature_dir / f"{video_id}.f16.npy"
     mapping_path = feature_dir / f"{video_id}.parquet"
     output_dir = paths.workspace / "keyframes" / encoder_id
     output_dir.mkdir(parents=True, exist_ok=True)
     selected_path = output_dir / f"{video_id}.parquet"
-    audit_path = output_dir / f"{video_id}.audit.parquet"
-    compact_path = output_dir / f"{video_id}.f16.npy"
-    report_path = report_output_path or paths.reports / f"keyframes_{video_id}.json"
     if selected_path.exists() and not force:
         raise FileExistsError(f"Output exists: {selected_path}. Use --force to rebuild.")
 
@@ -403,16 +397,7 @@ def select_video_keyframes(
             ) if enabled
         ), axis=1
     )
-    compact = vectors[selected["embedding_row"].to_numpy(dtype=np.int64)].astype(np.float16)
-
     atomic_write_parquet(selected, selected_path)
-    atomic_write_parquet(audit, audit_path)
-    temporary = compact_path.with_suffix(compact_path.suffix + ".tmp")
-    matrix = np.lib.format.open_memmap(temporary, mode="w+", dtype=np.float16, shape=compact.shape)
-    matrix[:] = compact
-    matrix.flush()
-    del matrix
-    temporary.replace(compact_path)
 
     shot_frame_counts = selected.groupby("shot_id").size()
     report = {
@@ -453,12 +438,8 @@ def select_video_keyframes(
             "evidence_manifest_path": str(evidence_manifest_path) if evidence_manifest_path else None,
         },
         "k_distribution": dict(sorted(Counter(x["k"] for x in chunk_stats).items())),
-        "elapsed_seconds": round(time.time() - started, 3),
         "outputs": {
             "selected_manifest": str(selected_path),
-            "audit_shadow_manifest": str(audit_path),
-            "selected_embeddings": str(compact_path),
         },
     }
-    atomic_write_json(report, report_path)
     return report

@@ -24,10 +24,10 @@ flowchart LR
     SAMPLE --> SAMPLES["workspace/samples/{video_id}.parquet"]
     SAMPLES --> BASE["SigLIP2 Base\ndense candidate embeddings"]
     VIDEO --> BASE
-    BASE --> DENSE["workspace/retrieval/*_samples/"]
+    BASE --> FEAT["workspace/features/{encoder}/{video_id}.*\ndense stride-5 features"]
     BASE --> SELECT["chunk medoids\n+ redundancy removal\n+ coverage fallback"]
-    SELECT --> KF["workspace/keyframes/{encoder}/{video_id}.*"]
-    SELECT --> FEAT["workspace/features/{encoder}/{video_id}.*\ndense stride-5 features"]
+    SELECT --> KF["workspace/keyframes/{encoder}/{video_id}.parquet"]
+    SELECT --> COMPACT["workspace/retrieval/{encoder}/{video_id}_unified/"]
     KF --> FINAL["SigLIP2 SO400M final embeddings"]
     VIDEO --> FINAL
     FINAL --> FIDX["workspace/retrieval/*_final_from_*/"]
@@ -156,9 +156,9 @@ Service trả response cho frontend. `/frame` giải mã và cache JPEG từ vid
 | Dataset audit | `archive/video/**/*.mp4` | `workspace/manifests/videos.parquet` (8 columns); `workspace/reports/dataset_audit.json` | Canonical video IDs, paths, FPS, frame counts, duration, readability, duplicate count and file size. |
 | Shot detection | video path from manifest; OmniShotCut checkpoint under `models/` | `workspace/shots/{video_id}.json` | Half-open shot ranges `[start, end)`, labels and decoded frame count for downstream validation. |
 | Sampling | shot JSON and video manifest | `workspace/samples/{video_id}.parquet` | Per-frame IDs, shot IDs, shot boundaries, timestamps and sampling reasons; production uses stride 5 plus each shot's start, middle and end anchors. |
-| SigLIP2 Base | sampled frames and source video | `workspace/retrieval/google_siglip2_base_patch16_224/{video_id}_samples/` | Dense candidate embeddings plus matching metadata/config. |
-| Adaptive keyframe selection | dense Base embeddings + metadata | `workspace/keyframes/{encoder_id}/{video_id}.parquet`, `.audit.parquet`, `.f16.npy`; `workspace/reports/keyframes_*.json` | Selects chunk medoids, removes redundancy and fills temporal coverage gaps. |
-| Base unified index | selected keyframes and dense Base features | `workspace/retrieval/{base}/{video_id}_unified/`; `workspace/features/{base}/{video_id}.parquet` and `.f16.npy` | Unified path keeps stride-5 Base features for later temporal refinement and a compact visual index for selected frames. |
+| SigLIP2 Base | sampled frames and source video | `workspace/features/google_siglip2_base_patch16_224/{video_id}.parquet` and `.f16.npy` | Dense stride-5 embeddings and metadata for temporal refinement and keyframe selection. |
+| Adaptive keyframe selection | dense Base embeddings + metadata | `workspace/keyframes/{encoder_id}/{video_id}.parquet` | Selects chunk medoids, removes redundancy and fills temporal coverage gaps. |
+| Base unified index | selected keyframes and dense Base features | `workspace/retrieval/{base}/{video_id}_unified/` | Compact visual index for selected frames; dense stride-5 features remain in `workspace/features/{base}/` for temporal refinement. |
 | SigLIP2 SO400M | keyframe manifest and original video | `workspace/retrieval/google_siglip2_so400m_patch14_384/{video_id}_final_from_google_siglip2_base_patch16_224/` | Stronger final visual vectors for serving, OCR, object detection and scene assembly. |
 | ASR | source video | `workspace/asr/faster_whisper_large_v3/{video_id}.json` | Transcript, segments, word timings and model metadata. |
 | Semantic scenes | shots, Base features, selected keyframes, ASR and video manifest | `workspace/semantic_scenes/{video_id}/scenes.parquet`, `scenes.json`, `report.json` | Merges related technical shots and stores temporal boundaries, representative frames and ASR context. |

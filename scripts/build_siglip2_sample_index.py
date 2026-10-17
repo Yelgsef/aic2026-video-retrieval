@@ -3,7 +3,6 @@ from __future__ import annotations
 import argparse
 import json
 import os
-import time
 from pathlib import Path
 
 os.environ.setdefault("HF_HUB_OFFLINE", "1")
@@ -21,7 +20,6 @@ import sys
 sys.path.insert(0, str(PROJECT_ROOT))
 
 from aic_pipeline.siglip_retrieval import encoder_id_from_model, save_index
-from aic_pipeline.siglip_retrieval import load_index
 from aic_pipeline.keyframe_selection import select_video_keyframes
 from aic_pipeline.paths import PipelinePaths
 
@@ -45,8 +43,9 @@ def main() -> None:
         help="Reuse the sampled-frame SigLIP vectors for clustering and the compact retrieval index.",
     )
     parser.add_argument(
-        "--reuse-dense-index", action="store_true",
-        help="Skip inference and build unified artifacts from an existing dense SigLIP index.",
+        "--reuse-dense-features", "--reuse-dense-index",
+        dest="reuse_dense_features", action="store_true",
+        help="Skip inference and build unified artifacts from existing dense features.",
     )
     parser.add_argument("--k-cap", type=int, default=12)
     parser.add_argument("--redundancy-cosine", type=float, default=0.95)
@@ -69,23 +68,40 @@ def main() -> None:
         raise ValueError("Sample manifest is empty or has duplicate frame IDs")
     video_path = find_video(args.video_id)
     encoder_id = encoder_id_from_model(args.model_id)
-    output_dir = PROJECT_ROOT / "workspace" / "retrieval" / encoder_id / f"{args.video_id}_samples"
-    if (output_dir / "embeddings.npy").exists() and not (args.force or args.reuse_dense_index):
-        raise FileExistsError(f"Dense index exists: {output_dir}")
+    feature_dir = PROJECT_ROOT / "workspace" / "features" / encoder_id
+    feature_matrix_path = feature_dir / f"{args.video_id}.f16.npy"
+    feature_mapping_path = feature_dir / f"{args.video_id}.parquet"
+    if feature_matrix_path.exists() and not (args.force or args.reuse_dense_features):
+        raise FileExistsError(f"Dense features exist: {feature_matrix_path}")
 
-    if args.reuse_dense_index:
+    if args.reuse_dense_features:
         if not args.unified_select:
-            raise ValueError("--reuse-dense-index requires --unified-select")
-        embeddings, dense_metadata, config = load_index(output_dir)
-        embeddings = np.asarray(embeddings, dtype=np.float32)
-        samples = dense_metadata.sort_values("frame_id").reset_index(drop=True)
-        if len(samples) != len(embeddings):
-            raise ValueError("Existing dense index metadata does not match embeddings")
-        print(f"Reusing {len(embeddings):,} existing SigLIP embeddings", flush=True)
+            raise ValueError("--reuse-dense-features requires --unified-select")
+        requested_frame_ids = samples.frame_id.astype(np.int64).to_numpy()
+        embeddings = np.load(feature_matrix_path, mmap_mode="r")
+        dense_metadata = pd.read_parquet(feature_mapping_path).sort_values("embedding_row").reset_index(drop=True)
+        if len(dense_metadata) != len(embeddings):
+            raise ValueError("Dense feature metadata does not match embeddings")
+        if not np.array_equal(requested_frame_ids, dense_metadata.frame_id.astype(np.int64).to_numpy()):
+            raise ValueError("Dense features were built from a different sample manifest")
+        samples["embedding_row"] = dense_metadata["embedding_row"].to_numpy(dtype=np.int64)
+        samples["encoder_id"] = encoder_id
+        config = {
+            "model_id": args.model_id,
+            "encoder_id": encoder_id,
+            "index_kind": "stride_samples",
+            "video_id": args.video_id,
+            "count": len(samples),
+            "dimension": int(embeddings.shape[1]),
+            "normalized": True,
+            "similarity": "cosine_via_inner_product",
+            "source_manifest": str(samples_path),
+        }
+        print(f"Reusing {len(embeddings):,} existing dense feature vectors", flush=True)
     else:
         config = None
 
-    if not args.reuse_dense_index:
+    if not args.reuse_dense_features:
         device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
         dtype = torch.float16 if device.type == "cuda" else torch.float32
         processor = AutoProcessor.from_pretrained(args.model_id, local_files_only=True, use_fast=False)
@@ -98,11 +114,8 @@ def main() -> None:
         target_position = 0
         frame_id = 0
         batch_images: list[Image.Image] = []
-        batch_rows = []
         chunks: list[np.ndarray] = []
         decoded = 0
-        started = time.time()
-
         def flush() -> None:
             if not batch_images:
                 return
@@ -125,7 +138,6 @@ def main() -> None:
 
             chunks.append(encode(batch_images).numpy())
             batch_images.clear()
-            batch_rows.clear()
 
         try:
             while target_position < len(target_rows):
@@ -137,7 +149,6 @@ def main() -> None:
                 if frame_id == target_frame:
                     rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
                     batch_images.append(Image.fromarray(rgb))
-                    batch_rows.append(target_rows[target_position])
                     target_position += 1
                     if len(batch_images) >= args.batch_size:
                         flush()
@@ -160,24 +171,18 @@ def main() -> None:
             "dimension": int(embeddings.shape[1]),
             "normalized": True,
             "similarity": "cosine_via_inner_product",
-            "device": str(device),
-            "dtype": str(dtype),
             "source_manifest": str(samples_path),
-            "video_path": str(video_path),
-            "decoded_frames": decoded,
-            "elapsed_seconds": round(time.time() - started, 3),
         }
-        save_index(output_dir, embeddings, samples, config)
 
-    if args.unified_select:
-        feature_dir = PROJECT_ROOT / "workspace" / "features" / encoder_id
         feature_dir.mkdir(parents=True, exist_ok=True)
         feature_mapping = samples.copy().reset_index(drop=True)
         feature_mapping["embedding_row"] = np.arange(len(feature_mapping), dtype=np.int64)
         feature_mapping["encoder_id"] = encoder_id
-        feature_mapping.to_parquet(feature_dir / f"{args.video_id}.parquet", index=False)
-        np.save(feature_dir / f"{args.video_id}.f16.npy", np.asarray(embeddings, dtype=np.float16))
+        feature_mapping.to_parquet(feature_mapping_path, index=False)
+        np.save(feature_matrix_path, np.asarray(embeddings, dtype=np.float16))
+        del embeddings
 
+    if args.unified_select:
         selection = select_video_keyframes(
             PipelinePaths.from_root(PROJECT_ROOT),
             video_id=args.video_id,
@@ -196,12 +201,11 @@ def main() -> None:
             coverage_window_frames=args.coverage_window_frames,
             evidence_manifest_path=args.evidence_manifest,
             force=args.force,
-            report_output_path=PROJECT_ROOT / "workspace" / "reports" / f"keyframes_{encoder_id}_{args.video_id}.json",
         )
         selected_path = PROJECT_ROOT / "workspace" / "keyframes" / encoder_id / f"{args.video_id}.parquet"
-        compact_path = PROJECT_ROOT / "workspace" / "keyframes" / encoder_id / f"{args.video_id}.f16.npy"
         selected = pd.read_parquet(selected_path)
-        compact = np.load(compact_path, mmap_mode="r")
+        dense_vectors = np.load(feature_matrix_path, mmap_mode="r")
+        compact = dense_vectors[selected["embedding_row"].to_numpy(dtype=np.int64)]
         compact_dir = PROJECT_ROOT / "workspace" / "retrieval" / encoder_id / f"{args.video_id}_unified"
         compact_config = {
             **config,
@@ -212,7 +216,7 @@ def main() -> None:
             "single_visual_encoder_pass": True,
         }
         save_index(compact_dir, compact, selected, compact_config)
-        config = {**config, "selection_report": selection, "compact_index": str(compact_dir)}
+        config = {**config, "compact_index": str(compact_dir)}
 
     print(json.dumps(config, ensure_ascii=False, indent=2))
 

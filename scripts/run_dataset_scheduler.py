@@ -148,7 +148,11 @@ def artifact_valid(video_id: str, stage: str) -> bool:
             metadata = pd.read_parquet(directory / "metadata.parquet")
             config = json.loads((directory / "config.json").read_text(encoding="utf-8"))
             selection = config.get("selection", {})
+            feature_dir = ROOT / "workspace" / "features" / "google_siglip2_base_patch16_224"
+            dense_vectors = np.load(feature_dir / f"{video_id}.f16.npy", mmap_mode="r")
+            dense_metadata = pd.read_parquet(feature_dir / f"{video_id}.parquet")
             return (len(vectors) == len(metadata) > 0 and metadata.shot_id.nunique() > 0
+                    and len(dense_vectors) == len(dense_metadata) > 0
                     and selection.get("temporal_chunk_frames") == 67
                     and selection.get("temporal_chunk_overlap") == 10
                     and selection.get("max_medoids_per_chunk") == 2
