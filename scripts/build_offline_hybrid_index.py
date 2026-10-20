@@ -3,6 +3,7 @@ from __future__ import annotations
 import argparse
 import json
 import sqlite3
+import tempfile
 import unicodedata
 from pathlib import Path
 
@@ -43,6 +44,10 @@ def main() -> None:
     frame_vectors: list[np.ndarray] = []
     skipped: dict[str, str] = {}
     for video_id in video_ids:
+        video_rows: list[dict] = []
+        video_vectors: list[np.ndarray] = []
+        video_frame_rows: list[dict] = []
+        video_frame_vectors: list[np.ndarray] = []
         try:
             scenes = pd.read_parquet(scene_root / video_id / "scenes.parquet").sort_values("scene_index")
             document_path = ROOT / "workspace" / "scene_documents" / video_id / "scenes.parquet"
@@ -73,17 +78,21 @@ def main() -> None:
                                              "frame_id": int(line["frame_id"])})
                 mask = (metadata.frame_id >= int(scene.start_frame)) & (metadata.frame_id < int(scene.end_frame_exclusive))
                 positions = np.flatnonzero(mask.to_numpy())
-                if not len(positions):
+                fallback_used = not len(positions)
+                if fallback_used:
                     midpoint = (float(scene.start_time) + float(scene.end_time)) / 2
                     positions = np.array([int(np.argmin(np.abs(metadata.pts_time.to_numpy() - midpoint)))])
                 pooled = normalize(np.asarray(embeddings[positions], dtype=np.float32).mean(axis=0))
-                row_id = len(rows)
+                row_id = len(rows) + len(video_rows)
                 for position in positions:
-                    frame_rows.append({"frame_row": len(frame_rows), "scene_row": row_id,
-                                       "video_id": video_id, "frame_id": int(metadata.iloc[position].frame_id),
-                                       "pts_time": float(metadata.iloc[position].pts_time)})
-                    frame_vectors.append(normalize(np.asarray(embeddings[position], dtype=np.float32)))
-                rows.append({
+                    video_frame_rows.append({
+                        "frame_row": len(frame_rows) + len(video_frame_rows), "scene_row": row_id,
+                        "video_id": video_id, "frame_id": int(metadata.iloc[position].frame_id),
+                        "pts_time": float(metadata.iloc[position].pts_time),
+                    })
+                    video_frame_vectors.append(
+                        normalize(np.asarray(embeddings[position], dtype=np.float32)))
+                video_rows.append({
                     "row_id": row_id,
                     "document_id": str(scene.scene_id),
                     "video_id": video_id,
@@ -96,6 +105,7 @@ def main() -> None:
                     "representative_frame_ids": representative_frame_ids,
                     "ocr_evidence_json": json.dumps(ocr_evidence, ensure_ascii=False),
                     "visual_embedding_count": int(len(positions)),
+                    "visual_fallback_used": fallback_used,
                     "asr_text": str(document.asr_text if document is not None else scene.asr_exact or ""),
                     "asr_context": str(document.asr_context if document is not None else scene.asr_context or ""),
                     "visual_summary": str(document.visual_summary if document is not None else ""),
@@ -112,7 +122,12 @@ def main() -> None:
                     "retrieval_text": str(document.retrieval_text if document is not None else " ".join(
                         filter(None, [str(scene.asr_exact or ""), str(scene.asr_context or "")]))),
                 })
-                vectors.append(pooled)
+                video_vectors.append(pooled)
+            # Commit this video's rows only after all its scenes are processed successfully.
+            rows.extend(video_rows)
+            vectors.extend(video_vectors)
+            frame_rows.extend(video_frame_rows)
+            frame_vectors.extend(video_frame_vectors)
         except (OSError, ValueError, KeyError) as exc:
             skipped[video_id] = str(exc)
 
@@ -121,38 +136,53 @@ def main() -> None:
     args.output.mkdir(parents=True, exist_ok=True)
     matrix = np.stack(vectors).astype(np.float32)
     table = pd.DataFrame(rows)
-    np.save(args.output / "scene_embeddings.npy", matrix)
-    table.to_parquet(args.output / "scenes.parquet", index=False)
     image_matrix = np.stack(frame_vectors).astype(np.float32)
-    np.save(args.output / "frame_embeddings.npy", image_matrix)
-    pd.DataFrame(frame_rows).to_parquet(args.output / "frames.parquet", index=False)
+    frame_table = pd.DataFrame(frame_rows)
+    if len(table) != len(matrix) or len(frame_table) != len(image_matrix):
+        raise ValueError("Index metadata/vector row mismatch before writing")
+    if not np.array_equal(table.row_id.to_numpy(), np.arange(len(table))):
+        raise ValueError("Scene row_id does not match scene vector order")
+    if not np.array_equal(frame_table.frame_row.to_numpy(), np.arange(len(frame_table))):
+        raise ValueError("Frame row_id does not match frame vector order")
 
-    database = args.output / "search.sqlite3"
-    temporary = database.with_suffix(".sqlite3.tmp")
-    temporary.unlink(missing_ok=True)
-    connection = sqlite3.connect(temporary)
-    connection.execute("PRAGMA journal_mode=WAL")
-    connection.execute("CREATE TABLE scenes(row_id INTEGER PRIMARY KEY, document_id TEXT UNIQUE, video_id TEXT, scene_index INTEGER, start_time REAL, end_time REAL, representative_frame_ids TEXT)")
-    connection.execute("CREATE VIRTUAL TABLE scene_fts USING fts5(document_id UNINDEXED, asr_text, asr_context, visual_summary, ocr_text, entities_text, retrieval_text, tokenize='unicode61 remove_diacritics 2')")
-    connection.execute("CREATE VIRTUAL TABLE fuzzy_fts USING fts5(document_id UNINDEXED, grams, tokenize='unicode61')")
-    connection.executemany("INSERT INTO scenes VALUES(?,?,?,?,?,?,?)", [
-        (r["row_id"], r["document_id"], r["video_id"], r["scene_index"], r["start_time"], r["end_time"], json.dumps(r["representative_frame_ids"])) for r in rows
-    ])
-    connection.executemany("INSERT INTO scene_fts(rowid,document_id,asr_text,asr_context,visual_summary,ocr_text,entities_text,retrieval_text) VALUES(?,?,?,?,?,?,?,?)", [
-        (r["row_id"] + 1, r["document_id"], r["asr_text"], r["asr_context"], r["visual_summary"],
-         " ".join(r["ocr_text"]), r["entities_text"] + " " + r["object_spatial_text"], r["retrieval_text"]) for r in rows
-    ])
-    connection.executemany("INSERT INTO fuzzy_fts(rowid,document_id,grams) VALUES(?,?,?)", [
-        (r["row_id"] + 1, r["document_id"], character_ngrams(" ".join(r["ocr_text"]) + " " + r["entities_text"] + " " + r["retrieval_text"]))
-        for r in rows
-    ])
-    connection.commit()
-    connection.close()
-    temporary.replace(database)
-    report = {"schema_version": "0.1.0", "videos": len(set(table.video_id)), "scenes": len(table),
-              "scene_embedding_shape": list(matrix.shape), "frame_embedding_shape": list(image_matrix.shape),
-              "skipped": skipped}
-    (args.output / "report.json").write_text(json.dumps(report, ensure_ascii=False, indent=2), encoding="utf-8")
+    with tempfile.TemporaryDirectory(prefix=".offline_index_staging_", dir=args.output) as staging_name:
+        staging = Path(staging_name)
+        np.save(staging / "scene_embeddings.npy", matrix)
+        table.to_parquet(staging / "scenes.parquet", index=False)
+        np.save(staging / "frame_embeddings.npy", image_matrix)
+        frame_table.to_parquet(staging / "frames.parquet", index=False)
+
+        database = staging / "search.sqlite3"
+        connection = sqlite3.connect(database)
+        connection.execute("PRAGMA journal_mode=DELETE")
+        connection.execute("CREATE TABLE scenes(row_id INTEGER PRIMARY KEY, document_id TEXT UNIQUE, video_id TEXT, scene_index INTEGER, start_time REAL, end_time REAL, representative_frame_ids TEXT)")
+        connection.execute("CREATE VIRTUAL TABLE scene_fts USING fts5(document_id UNINDEXED, asr_text, asr_context, visual_summary, ocr_text, entities_text, retrieval_text, tokenize='unicode61 remove_diacritics 2')")
+        connection.execute("CREATE VIRTUAL TABLE fuzzy_fts USING fts5(document_id UNINDEXED, grams, tokenize='unicode61')")
+        connection.executemany("INSERT INTO scenes VALUES(?,?,?,?,?,?,?)", [
+            (r["row_id"], r["document_id"], r["video_id"], r["scene_index"], r["start_time"], r["end_time"], json.dumps(r["representative_frame_ids"])) for r in rows
+        ])
+        connection.executemany("INSERT INTO scene_fts(rowid,document_id,asr_text,asr_context,visual_summary,ocr_text,entities_text,retrieval_text) VALUES(?,?,?,?,?,?,?,?)", [
+            (r["row_id"] + 1, r["document_id"], r["asr_text"], r["asr_context"], r["visual_summary"],
+             " ".join(r["ocr_text"]), r["entities_text"] + " " + r["object_spatial_text"], r["retrieval_text"]) for r in rows
+        ])
+        connection.executemany("INSERT INTO fuzzy_fts(rowid,document_id,grams) VALUES(?,?,?)", [
+            (r["row_id"] + 1, r["document_id"], character_ngrams(" ".join(r["ocr_text"]) + " " + r["entities_text"] + " " + r["retrieval_text"]))
+            for r in rows
+        ])
+        connection.commit()
+        connection.close()
+        report = {"schema_version": "0.2.0", "videos": len(set(table.video_id)), "scenes": len(table),
+                  "scene_embedding_shape": list(matrix.shape), "frame_embedding_shape": list(image_matrix.shape),
+                  "visual_fallback_scenes": int(table.visual_fallback_used.sum()), "skipped": skipped}
+        staged_report = staging / "report.json"
+        staged_report.write_text(json.dumps(report, ensure_ascii=False, indent=2), encoding="utf-8")
+
+        final_names = ("scene_embeddings.npy", "scenes.parquet", "frame_embeddings.npy",
+                       "frames.parquet", "search.sqlite3")
+        (args.output / "report.json").unlink(missing_ok=True)
+        for name in final_names:
+            (staging / name).replace(args.output / name)
+        staged_report.replace(args.output / "report.json")
     print(json.dumps(report, ensure_ascii=False, indent=2))
 
 

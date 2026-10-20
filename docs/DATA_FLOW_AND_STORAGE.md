@@ -205,8 +205,12 @@ Default output is `workspace/offline_index/`; production can build other named r
 | `frame_embeddings_openclip.npy` | Optional OpenCLIP frame vectors; aligned with `frames.parquet`. `openclip_frame_keys.parquet` is the incremental-build key sidecar. |
 | `search.sqlite3` | `scenes` lookup table and FTS5 tables `scene_fts` and `fuzzy_fts` for lexical and character n-gram retrieval. |
 | `report.json`, `bge_m3_report.json`, `openclip_report.json` | Build coverage, dimensions, skips and model details. |
+| `milvus_lite.db` | Optional derived Milvus Lite database with HNSW/COSINE collections for available scene and frame embedding matrices. |
+| `milvus_report.json` | Optional collection counts, vector dimensions, HNSW settings and sampled ANN recall against exact cosine search. |
 
 `row_id`/array position is the canonical join for scene vectors; `scene_row` joins frame metadata to a scene. SQLite FTS uses one-based FTS rowids while its row lookup and NumPy/Parquet indices are zero-based; the search engine converts between them. Keep metadata and vector files from the same index build together.
+
+`scripts/build_milvus_index.py` is an optional final build step after the global index, BGE-M3 and OpenCLIP builders. It reads the existing `.npy` and Parquet files without recomputing embeddings. Scene vectors are split into `scene_siglip` and four BGE collections; frame vectors are split into `frame_siglip` and optional `frame_openclip`. It builds HNSW indexes with COSINE distance, then samples each collection and records recall against exact NumPy cosine search. Milvus is a derived ANN index; the Parquet and NumPy files remain its reproducible sources. The current `OfflineSearchEngine` still uses NumPy scoring, so building Milvus alone does not change online query behavior. SQLite remains the lexical/fuzzy search index.
 
 ## 4. Truy vấn online và dữ liệu runtime
 

@@ -83,6 +83,7 @@ Index đầy đủ: workspace/offline_index_all_873/
 Các file quan trọng: scenes.parquet, frames.parquet, scene_embeddings.npy,
 frame_embeddings.npy, frame_embeddings_openclip.npy, text_embeddings_bge_m3*.npy,
 search.sqlite3, bge_m3_report.json và openclip_report.json.
+Nếu đã build Milvus Lite, thư mục còn có `milvus_lite.db` và `milvus_report.json`.
 
 ~~~bash
 uv run --project environments/siglip2 python -c "import pandas as pd; p='workspace/offline_index_all_873'; f=pd.read_parquet(p+'/frames.parquet'); s=pd.read_parquet(p+'/scenes.parquet'); print('frame videos=',f.video_id.nunique()); print('scene videos=',s.video_id.nunique()); print('frames=',len(f),'scenes=',len(s))"
@@ -232,9 +233,12 @@ Chỉ build lại khi thêm dữ liệu hoặc thay embedding model. Bật Qwen 
 uv run --project environments/siglip2 python scripts/build_offline_hybrid_index.py --output workspace/offline_index_all_873
 uv run --project environments/siglip2 python scripts/build_bge_m3_scene_index.py --documents workspace/offline_index_all_873/scenes.parquet --output workspace/offline_index_all_873 --batch-size 16
 CUDA_VISIBLE_DEVICES=1 uv run --project environments/siglip2 python scripts/build_openclip_frame_index.py --index workspace/offline_index_all_873 --batch-size 128 --force
+uv run --project environments/siglip2 python scripts/build_milvus_index.py --index workspace/offline_index_all_873
 ~~~
 
-OpenCLIP cần video gốc trong archive/video/.
+OpenCLIP cần video gốc trong archive/video/. Milvus Lite nạp các vector và metadata
+từ index đã build, tạo HNSW/COSINE collections và kiểm tra ANN recall trước khi
+ghi `milvus_report.json`. Dùng `--overwrite` để build lại collections cùng prefix.
 
 ## Chạy lâu trên Vast.ai
 
@@ -250,11 +254,35 @@ tmux attach -t aic
 
 Không đóng SSH nếu process còn TTY=pts/... và không nằm trong tmux.
 
-## Milvus (tùy chọn)
+## Milvus Lite (tùy chọn)
 
-Milvus chỉ lưu vector và metadata; vẫn giữ .npy, .parquet, .sqlite3 làm dữ liệu
-gốc. Nên tạo collection riêng: BGE-M3 dim 1024, SigLIP2 dim 1152 và OpenCLIP
-dim 768. Mỗi vector cần video_id, scene_index/frame_id, timestamp và ID.
+`scripts/build_milvus_index.py` là bước cuối sau core, BGE-M3 và OpenCLIP index.
+Script không encode lại; nó nạp các artifact hiện có vào `milvus_lite.db` và tạo
+collection HNSW với metric COSINE. Mặc định tạo tối đa bảy collection:
+
+- `aic_scene_siglip` và `aic_frame_siglip` cho vector SO400M.
+- `aic_bge_retrieval`, `aic_bge_summary`, `aic_bge_asr` và
+  `aic_bge_ocr_entities` cho bốn view văn bản BGE-M3.
+- `aic_frame_openclip` nếu ma trận OpenCLIP tồn tại.
+
+Scene collections lưu `row_id`, `document_id`, `video_id`, `scene_index` và
+thời gian. Frame collections lưu `frame_row`, `scene_row`, `video_id`,
+`frame_id` và `pts_time`. Giữ `scenes.parquet`, `frames.parquet` và các `.npy`
+đồng bộ với database; Milvus là index dẫn xuất có thể build lại. `--overwrite`
+chỉ xóa và tạo lại collection có tiền tố đang chọn. Mặc định, nếu collection
+đã tồn tại thì script dừng để tránh ghi đè nhầm.
+
+Ví dụ thử nghiệm trên index nhỏ:
+
+~~~bash
+uv run --project environments/siglip2 python scripts/build_milvus_index.py \
+  --index workspace/offline_index_subset20 --batch-size 512 --verify-samples 5
+~~~
+
+Builder kiểm tra top-k Milvus với exact cosine search trên một số vector mẫu,
+rồi ghi `milvus_report.json` gồm số lượng, chiều và recall từng collection.
+Hiện query engine vẫn dùng NumPy dense scoring; tạo Milvus index chưa tự chuyển
+online retrieval sang ANN.
 
 ## Bảo mật và bàn giao
 

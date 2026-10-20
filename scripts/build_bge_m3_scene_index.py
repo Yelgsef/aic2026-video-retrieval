@@ -3,6 +3,7 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import tempfile
 from pathlib import Path
 
 os.environ.setdefault("HF_HUB_OFFLINE", "1")
@@ -25,24 +26,36 @@ def main() -> None:
     parser.add_argument("--batch-size", type=int, default=8)
     parser.add_argument("--max-length", type=int, default=512)
     args = parser.parse_args()
+    if args.batch_size < 1:
+        parser.error("--batch-size must be at least 1")
+    if args.max_length < 1:
+        parser.error("--max-length must be at least 1")
     table = pd.read_parquet(args.documents)
+    required = {"row_id", "document_id", "video_id", "scene_index", "retrieval_text",
+                "visual_summary", "asr_text", "asr_context", "ocr_text", "entities_text"}
+    missing = sorted(required - set(table.columns))
+    if missing:
+        raise ValueError(f"Scene documents missing required columns: {missing}")
+    if table.empty:
+        raise ValueError(f"No scene documents in {args.documents}")
+    if table.row_id.duplicated().any():
+        raise ValueError("Scene documents contain duplicate row_id values")
+    if not np.array_equal(table.row_id.to_numpy(), np.arange(len(table))):
+        raise ValueError("Scene row_id must match scenes.parquet row order")
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     dtype = torch.float16 if device.type == "cuda" else torch.float32
     tokenizer = AutoTokenizer.from_pretrained(args.model_id, local_files_only=True)
     model = AutoModel.from_pretrained(args.model_id, local_files_only=True, torch_dtype=dtype).to(device).eval()
-    def encode(texts: list[str]) -> np.ndarray:
-        chunks = []
-        for start in range(0, len(texts), args.batch_size):
-            inputs = tokenizer(texts[start:start + args.batch_size], padding=True, truncation=True,
-                               max_length=args.max_length, return_tensors="pt").to(device)
-            with torch.inference_mode():
-                hidden = model(**inputs).last_hidden_state[:, 0].float()
-                hidden = torch.nn.functional.normalize(hidden, dim=-1)
-            chunks.append(hidden.cpu().numpy())
-        return np.concatenate(chunks).astype(np.float32)
+    def encode_batch(texts: list[str]) -> np.ndarray:
+        inputs = tokenizer(texts, padding=True, truncation=True,
+                            max_length=args.max_length, return_tensors="pt").to(device)
+        with torch.inference_mode():
+            hidden = model(**inputs).last_hidden_state[:, 0].float()
+            hidden = torch.nn.functional.normalize(hidden, dim=-1)
+        return hidden.cpu().numpy().astype(np.float32, copy=False)
 
     def join_values(value: object) -> str:
-        if value is None:
+        if value is None or (isinstance(value, float) and np.isnan(value)):
             return ""
         if isinstance(value, str):
             return value
@@ -58,19 +71,45 @@ def main() -> None:
         "ocr_entities": [f"{join_values(ocr)} {entities}".strip()
                          for ocr, entities in zip(table.ocr_text, table.entities_text.fillna(""))],
     }
-    matrices = {field: encode(texts) for field, texts in field_texts.items()}
-    matrix = matrices["retrieval"]
     args.output.mkdir(parents=True, exist_ok=True)
-    np.save(args.output / "text_embeddings_bge_m3.npy", matrix)
-    for field, field_matrix in matrices.items():
-        if field != "retrieval":
-            np.save(args.output / f"text_embeddings_bge_m3_{field}.npy", field_matrix)
-    table[["row_id", "document_id", "video_id", "scene_index"]].to_parquet(
-        args.output / "text_embeddings_bge_m3.parquet", index=False)
-    report = {"model": args.model_id, "rows": len(matrix), "dimension": int(matrix.shape[1]),
-              "fields": list(matrices),
-              "device": str(device), "max_length": args.max_length}
-    (args.output / "bge_m3_report.json").write_text(json.dumps(report, indent=2), encoding="utf-8")
+    staged_paths: dict[str, Path] = {}
+    report_path = args.output / "bge_m3_report.json"
+    with tempfile.TemporaryDirectory(prefix=".bge_m3_staging_", dir=args.output) as staging_name:
+        staging = Path(staging_name)
+        dimension: int | None = None
+        for field, texts in field_texts.items():
+            filename = "text_embeddings_bge_m3.npy" if field == "retrieval" else f"text_embeddings_bge_m3_{field}.npy"
+            path = staging / filename
+            matrix = np.lib.format.open_memmap(
+                path, mode="w+", dtype=np.float32, shape=(len(texts), int(model.config.hidden_size)))
+            for start in range(0, len(texts), args.batch_size):
+                batch = encode_batch(texts[start:start + args.batch_size])
+                if dimension is None:
+                    dimension = int(batch.shape[1])
+                if batch.shape != (min(args.batch_size, len(texts) - start), dimension):
+                    raise ValueError(f"Unexpected {field} embedding shape: {batch.shape}")
+                matrix[start:start + len(batch)] = batch
+            matrix.flush()
+            del matrix
+            staged_paths[filename] = path
+        if dimension is None:
+            raise RuntimeError("BGE-M3 produced no embeddings")
+        report = {"schema_version": "0.2.0", "model": args.model_id, "rows": len(table),
+                  "dimension": dimension, "fields": list(field_texts),
+                  "device": str(device), "batch_size": args.batch_size,
+                  "max_length": args.max_length, "documents": str(args.documents.resolve())}
+        staged_report = staging / report_path.name
+        staged_report.write_text(json.dumps(report, indent=2), encoding="utf-8")
+        table[["row_id", "document_id", "video_id", "scene_index"]].to_parquet(
+            staging / "text_embeddings_bge_m3.parquet", index=False)
+
+        # Publish the report last so it marks a complete set of field matrices.
+        report_path.unlink(missing_ok=True)
+        for filename, staged in staged_paths.items():
+            staged.replace(args.output / filename)
+        (staging / "text_embeddings_bge_m3.parquet").replace(
+            args.output / "text_embeddings_bge_m3.parquet")
+        staged_report.replace(report_path)
     print(json.dumps(report, indent=2))
 
 
