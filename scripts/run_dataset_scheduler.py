@@ -50,6 +50,7 @@ def configuration_hash() -> str:
         "visual_batch_size": 16,
         "rerank_model": "google/siglip2-so400m-patch14-384",
         "asr_model": "large-v3",
+        "asr_schema_version": "0.2.0",
         "asr_compute_type": "float16",
         "asr_beam_size": 1,
         "semantic_scene_version": "0.2.0",
@@ -164,7 +165,9 @@ def artifact_valid(video_id: str, stage: str) -> bool:
             return len(vectors) == len(metadata) > 0 and vectors.shape[1] == 1152
         if stage == "asr-large-v3":
             value = json.loads((ROOT / "workspace" / "asr" / "faster_whisper_large_v3" / f"{video_id}.json").read_text(encoding="utf-8"))
-            return value.get("duration", 0) > 0 and "segments" in value
+            return (value.get("schema_version") == "0.2.0"
+                    and value.get("duration", 0) > 0
+                    and isinstance(value.get("segments"), list))
         if stage == "semantic-scenes":
             table = pd.read_parquet(ROOT / "workspace" / "semantic_scenes" / video_id / "scenes.parquet")
             return len(table) > 0 and table.scene_id.is_unique and bool((table.end_time > table.start_time).all())

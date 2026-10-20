@@ -47,9 +47,8 @@ def main() -> None:
                            "changes": correction.get("changes", []) if correction else [],
                            "uncertainties": correction.get("uncertainties", []) if correction else []})
     output = root / "normalized.json"
-    output.write_text(json.dumps({"schema_version": "0.1.0", "video_id": args.video_id,
-        "segments": normalized, "full_text_raw": source.get("full_text", ""),
-        "full_text_normalized": " ".join(x["normalized_text"].strip() for x in normalized),
+    output.write_text(json.dumps({"schema_version": "0.2.0", "video_id": args.video_id,
+        "segments": normalized,
         "errors": errors}, ensure_ascii=False, indent=2), encoding="utf-8")
     print(json.dumps({"video_id": args.video_id, "corrected": len(corrections),
                       "errors": len(errors), "output": str(output)}, ensure_ascii=False, indent=2))

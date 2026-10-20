@@ -160,7 +160,7 @@ Service trả response cho frontend. `/frame` giải mã và cache JPEG từ vid
 | Adaptive keyframe selection | dense Base embeddings + metadata | `workspace/keyframes/{encoder_id}/{video_id}.parquet` | Selects chunk medoids, removes redundancy and fills temporal coverage gaps. |
 | Base unified index | selected keyframes and dense Base features | `workspace/retrieval/{base}/{video_id}_unified/` | Compact visual index for selected frames; dense stride-5 features remain in `workspace/features/{base}/` for temporal refinement. |
 | SigLIP2 SO400M | keyframe manifest and original video | `workspace/retrieval/google_siglip2_so400m_patch14_384/{video_id}_final_from_google_siglip2_base_patch16_224/` | Stronger final visual vectors for serving, OCR, object detection and scene assembly. |
-| ASR | source video | `workspace/asr/faster_whisper_large_v3/{video_id}.json` | Transcript, segments, word timings and model metadata. |
+| ASR | source video path from `videos.parquet` | `workspace/asr/faster_whisper_large_v3/{video_id}.json` | Compact transcript with `video_id`, model, detected language, duration and segments. Each segment stores start/end/text, `avg_logprob` and its word timestamps/text/probability. |
 | Semantic scenes | shots, Base features, selected keyframes, ASR and video manifest | `workspace/semantic_scenes/{video_id}/scenes.parquet`, `scenes.json`, `report.json` | Merges related technical shots and stores temporal boundaries, representative frames and ASR context. |
 | Full-resolution OCR | source video + SO400M frame metadata | `workspace/ocr_fullres/{video_id}/regions.parquet`, crops, candidates, reports | OCR text and exact frame provenance; uncertain local OCR can be sent for remote crop reading. |
 | Objects/spatial evidence | source video, SO400M metadata and semantic scenes | `workspace/objects_yoloworld/{video_id}/detections.parquet`, optional crops and `report.json` | Frame-level labels, confidence, boxes, normalized coordinates and scene mapping. |
@@ -168,7 +168,7 @@ Service trả response cho frontend. `/frame` giải mã và cache JPEG từ vid
 | Optional ASR normalization | raw ASR segments and neighbors | `workspace/asr_normalization/{video_id}/` requests, responses and `normalized.json` | Conditional correction of uncertain transcript segments; raw text is retained. |
 | Unified scene documents | semantic scenes + parsed VLM + objects + full-res OCR + optional normalized ASR | `workspace/scene_documents/{video_id}/scenes.jsonl`, `scenes.parquet`, `report.json` | Consolidates search text and structured evidence for each scene. |
 
-The full-resolution OCR crop response parser updates `regions.parquet` in place with `gemini_text`, `final_text` and verification fields. The scene-document builder then uses searchable full-resolution OCR and prefers normalized ASR when available.
+The full-resolution OCR crop response parser updates `regions.parquet` in place with `gemini_text`, `final_text` and verification fields. Semantic-scene construction reads word timestamps nested under each ASR segment. Conditional ASR normalization uses segment confidence and word probabilities and keeps raw and normalized text per segment without writing duplicate concatenated transcripts. The scene-document builder then uses searchable full-resolution OCR and prefers normalized ASR when available.
 
 ## 3. Offline index toàn cục
 

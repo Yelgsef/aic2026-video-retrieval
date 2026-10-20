@@ -5,7 +5,6 @@ import json
 import os
 from pathlib import Path
 import sys
-import time
 
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
@@ -58,7 +57,6 @@ def main() -> None:
 
     from faster_whisper import WhisperModel
 
-    started = time.time()
     print(f"Loading {args.model} on {args.device} ({args.compute_type})", flush=True)
     model = WhisperModel(args.model, device=args.device, compute_type=args.compute_type)
     segments_generator, info = model.transcribe(
@@ -71,7 +69,6 @@ def main() -> None:
         condition_on_previous_text=True,
     )
     segments = []
-    words = []
     for index, segment in enumerate(segments_generator):
         segment_words = []
         for word in segment.words or []:
@@ -81,7 +78,6 @@ def main() -> None:
                 "text": word.word,
                 "probability": float(word.probability),
             }
-            words.append({"segment_id": index, **item})
             segment_words.append(item)
         segments.append(
             {
@@ -90,7 +86,6 @@ def main() -> None:
                 "end": float(segment.end),
                 "text": segment.text.strip(),
                 "avg_logprob": float(segment.avg_logprob),
-                "no_speech_prob": float(segment.no_speech_prob),
                 "words": segment_words,
             }
         )
@@ -98,31 +93,24 @@ def main() -> None:
             print(f"Transcribed {index + 1} segments through {segment.end:.1f}s", flush=True)
 
     document = {
-        "schema_version": "0.1.0",
+        "schema_version": "0.2.0",
         "video_id": args.video_id,
-        "video_path": str(video_path),
-        "engine": "faster-whisper",
         "model": args.model,
-        "device": args.device,
-        "compute_type": args.compute_type,
         "language": info.language,
-        "language_probability": float(info.language_probability),
         "duration": float(info.duration),
-        "duration_after_vad": float(info.duration_after_vad),
-        "segment_count": len(segments),
-        "word_count": len(words),
         "segments": segments,
-        "words": words,
-        "full_text": " ".join(segment["text"] for segment in segments),
-        "elapsed_seconds": round(time.time() - started, 3),
     }
     temporary = output_path.with_suffix(".json.tmp")
     temporary.write_text(json.dumps(document, ensure_ascii=False, indent=2), encoding="utf-8")
     os.replace(temporary, output_path)
-    print(json.dumps({key: document[key] for key in (
-        "video_id", "model", "language", "duration", "duration_after_vad",
-        "segment_count", "word_count", "elapsed_seconds"
-    )}, ensure_ascii=False, indent=2))
+    print(json.dumps({
+        "video_id": args.video_id,
+        "duration": document["duration"],
+        "model": args.model,
+        "language": info.language,
+        "segments": len(segments),
+        "words": sum(len(segment["words"]) for segment in segments),
+    }, ensure_ascii=False, indent=2))
     print(f"Saved {output_path}")
 
 

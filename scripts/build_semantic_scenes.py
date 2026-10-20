@@ -33,7 +33,9 @@ def asr_for_interval(asr: dict[str, Any] | None, start: float, end: float) -> tu
     if not asr:
         return "", "", []
     words = [
-        word for word in asr.get("words", [])
+        {"segment_id": segment["segment_id"], **word}
+        for segment in asr.get("segments", [])
+        for word in segment.get("words", [])
         if start <= (float(word["start"]) + float(word["end"])) / 2 < end
     ]
     segments = [
