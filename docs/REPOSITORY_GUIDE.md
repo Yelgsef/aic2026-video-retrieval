@@ -1,82 +1,49 @@
 # Repository guide
 
-Tài liệu này mô tả repository đang dùng, không mô tả các baseline đã bị loại bỏ.
+Tài liệu này mô tả cấu trúc và cách vận hành code hiện tại trong repository.
+Các artifact dữ liệu, checkpoint và index nằm trên máy hoặc object storage; chúng
+không được commit cùng source code.
 
-## 1. Thư mục
+## 1. Cấu trúc repository
 
-| Đường dẫn | Vai trò | Có commit? |
-|---|---|---|
-| `aic_pipeline/` | Thư viện Python dùng chung cho retrieval, fusion, QA, KIS và TRAKE | Có |
-| `scripts/` | Entrypoint chạy stage, scheduler, serving và benchmark | Có |
-| `environments/` | Các môi trường `uv` độc lập theo workload | Có, trừ `.venv` |
-| `tests/` | Unit test cho sampling, fusion, grounding, routing và temporal alignment | Có |
-| `frontend/` | Frontend tĩnh cho KIS/QA/TRAKE | Có |
-| `backend/` | FastAPI API, retrieval runtime và media/QA services | Có |
-| `third_party/OmniShotCut` | Git submodule của OmniShotCut | Có dưới dạng submodule |
-| `archive/video/` | Video dataset gốc | Không |
-| `models/`, `weights/` | Checkpoint tải về | Không |
-| `workspace/` | Manifest, embeddings, scene documents, index và scheduler state | Không |
-| `exports/` | Kết quả xuất để xem/nộp | Không |
-
-Không xóa `workspace/scheduler/jobs.sqlite3` nếu muốn resume. Không commit `.env`, dataset, model hoặc index.
-
-## 2. Module runtime
-
-### Video và keyframe
-
-- `audit.py`, `paths.py`, `io.py`: tìm dataset, chuẩn hóa ID và I/O.
-- `sampling.py`: stride theo shot và temporal sampling.
-- `keyframe_selection.py`: chunk, medoid, redundancy elimination và coverage fallback.
-- `siglip_retrieval.py`: tải/encode SigLIP2 và cosine retrieval.
-
-### Evidence và query
-
-- `ocr_filter.py`: loại watermark, timestamp và lower-third nhiễu.
-- `object_spatial.py`, `object_grounding.py`: count, vị trí, quan hệ và crop grounding.
-- `scene_evidence.py`: chọn frame evidence thích ứng theo câu hỏi.
-- `query_understanding.py`, `query_transformer.py`: intent, answer type, constraints và query variants.
-- `router_chat.py`: client OpenAI-compatible cho 9Router.
-
-### Retrieval và task logic
-
-- `offline_search_engine.py`: nạp index và chạy các nhánh retrieval.
-- `retrieval_fusion.py`, `fusion_profiles.py`: normalize, fusion và profile theo intent.
-- `gemini_text_retrieval.py`: vector text backend lựa chọn tương thích Gemini.
-- `qa_gemini.py`, `qa_reasoning.py`: evidence selection, VQA và answer variants.
-- `kis_review.py`: review pack và exact-frame refinement chỉ dành cho KIS.
-- `temporal_alignment.py`, `temporal_reranker.py`, `xclip_reranker.py`: xếp chuỗi sự kiện TRAKE.
-- `task_router.py`, `submission.py`: route task và định dạng output.
-
-## 3. Môi trường uv
-
-| Project | Workload |
+| Đường dẫn | Vai trò |
 |---|---|
-| `environments/omnishotcut` | shot segmentation |
-| `environments/siglip2` | embeddings, index, retrieval và service |
-| `environments/asr` | Faster-Whisper |
-| `environments/ocr` | PaddleOCR/PP-OCR |
-| `environments/objects` | YOLO-World/object extraction |
-| `environments/gemini` | chuẩn bị/parse VLM jobs và gọi 9Router/direct Gemini |
+| `aic_pipeline/` | Module Python dùng chung cho xử lý dữ liệu, retrieval, fusion, QA, KIS và TRAKE. |
+| `scripts/` | CLI cho scheduler, từng stage offline, build index, query, serving và validation. |
+| `backend/` | FastAPI app, request schema, runtime dùng chung, query, QA và media service. |
+| `frontend/` | Web app chính cho KIS, QA, TRAKE và kiểm tra frame; FastAPI phục vụ cùng origin. |
+| `environments/` | Các project `uv` tách theo workload và dependency. |
+| `tests/` | Unit tests cho sampling, retrieval, fusion, routing, grounding và temporal alignment. |
+| `docs/` | Data flow, repository guide và hướng dẫn Query Transformer. |
+| `third_party/OmniShotCut/` | Git submodule OmniShotCut dùng cho shot boundary detection. |
+| `archive/video/` | Video nguồn; manifest trỏ tới file trong archive. |
+| `archive/` | Một số artifact/feature cũ được lưu để tham chiếu; không phải output mặc định của flow hiện tại. |
+| `models/`, `weights/` | Checkpoint tải hoặc chuẩn bị cục bộ; không commit. |
+| `workspace/` | Manifest, intermediate artifacts, embeddings, scene documents, index, cache và scheduler state; không commit. |
+| `web/` | Giao diện cũ với API contract trước lần tách frontend/backend; Flow C hiện chạy `frontend/`. |
 
-Khởi tạo bằng `uv sync --project environments/<name>`. Không dùng một `.venv` chung vì CUDA/Paddle/Python constraints khác nhau.
+Không commit `.env`, dữ liệu video, model weights, `workspace/` hoặc index database.
+Không xóa scheduler SQLite nếu cần resume các job.
 
-## 4. Offline lifecycle
+## 2. Pipeline theo flow
+
+### Flow A — video tới scene evidence
+
+Scheduler riêng: `scripts/run_flow_a_scheduler.py`. Các stage và dependency hiện
+tại:
 
 ```text
-audit dataset
-  -> OmniShotCut
-  -> stride-5 sampling
-  -> SigLIP2 Base candidate embeddings
-  -> temporal chunks + medoids + redundancy + coverage audit
-  -> SigLIP2 SO400M final embeddings
-  -> ASR / OCR / objects / remote scene enrichment
-  -> unified scene documents
-  -> SigLIP2 + OpenCLIP + BGE-M3 + lexical indexes
+OmniShotCut -> stride-5 sampling -> SigLIP2 Base embeddings
+                                  -> SigLIP2 SO400M final embeddings
+ASR large-v3 --------------------> semantic scenes
+SigLIP2 Base --------------------> semantic scenes
 ```
 
-Scheduler lưu một job cho mỗi `(video_id, stage, config_hash)`. Artifact hợp lệ được reconcile thành `completed`; job stale/retry có thể tiếp tục mà không xử lý lại phần đã xong.
+ASR có thể chạy độc lập với nhánh OmniShotCut/sampling. Semantic scenes cần cả
+SigLIP2 Base features và ASR. Scheduler Flow A chỉ quản lý các stage trên; các
+stage enrichment, OCR/YOLO và build global index thuộc scheduler rộng hơn.
 
-Chạy riêng Flow A cho một video (cần tạo `videos.parquet` bằng audit trước):
+Khởi tạo/chạy cho một video:
 
 ```bash
 CUDA_VISIBLE_DEVICES=0 uv run --project environments/siglip2 \
@@ -91,101 +58,136 @@ uv run --project environments/siglip2 \
   python scripts/run_flow_a_scheduler.py --status
 ```
 
-Chạy hai GPU nên đặt mỗi worker trong một cửa sổ `tmux` riêng, cùng `--shard-count 2` và khác `--shard-index 0/1`.
+### Flow B — enrichment và global retrieval index
 
-## 5. Artifact contract
+`scripts/run_dataset_scheduler.py` quản lý các stage trên mỗi video rộng hơn:
+YOLO-World, full-resolution PP-OCR, chuẩn bị ASR normalization, chuẩn bị 9Router
+scene/OCR requests. `run_full_dataset_supervisor.py` và
+`run_gemini_subset_supervisor.py` điều phối các stage và build index cho dataset
+đầy đủ hoặc subset. Tên file có chữ `gemini` còn được giữ để tương thích; remote
+enrichment hiện dùng 9Router.
 
-Các đường dẫn chính dưới `workspace/`:
+Các bước tạo search index được chạy sau khi scene documents đã sẵn sàng:
 
-- `manifests/videos.parquet`: danh sách video đã audit.
-- `shots/<video_id>/`: shot boundaries OmniShotCut.
-- `sampling/<video_id>/`: sampled-frame manifest.
-- `features/<encoder_id>/<video_id>/`: visual embeddings theo encoder.
-- `keyframes/<video_id>/`: final keyframe metadata.
-- `asr/<video_id>/`: transcript và timestamps.
-- `ocr_fullres/<video_id>/`: OCR lines/crops và frame provenance.
-- `objects/<video_id>/`: object detections/spatial metadata.
-- `semantic_scenes/<video_id>/`: scene-level multimodal metadata.
-- `scheduler/jobs.sqlite3`: trạng thái resume.
-- `offline_index_all_873/`: index serving đầy đủ.
+```text
+scene documents + final frame metadata/embeddings
+  -> build_offline_hybrid_index.py
+  -> build_bge_m3_scene_index.py
+  -> build_openclip_frame_index.py (optional)
+  -> build_milvus_index.py
+```
 
-Index serving cần `scenes.parquet`, `frames.parquet`, các vector nguồn `.npy`, `search.sqlite3` và `milvus_lite.db` cùng `milvus_report.json`. Milvus Lite phục vụ ANN vector retrieval; SQLite FTS/fuzzy vẫn phục vụ lexical retrieval và metadata lookup. `frame_id`, `video_id`, timestamps và scene index phải luôn được giữ cùng vector. Sau khi rebuild vector, chạy lại `scripts/build_milvus_index.py` trước khi khởi động query engine.
+Milvus Lite chứa vector collections HNSW cho ANN search. `search.sqlite3` vẫn
+phục vụ FTS/fuzzy và metadata lookup. Parquet/NumPy là artifact nguồn để build
+lại index; Milvus DB là derived artifact. Xem
+[`DATA_FLOW_AND_STORAGE.md`](DATA_FLOW_AND_STORAGE.md) để biết đầy đủ input/output
+theo stage.
 
-## 6. Retrieval online
+### Flow C — truy vấn online
 
-1. Router xác định KIS, QA hoặc TRAKE.
-2. Query Transformer tùy chọn tạo variants nhưng không tự trả lời.
-3. Engine lấy candidate từ visual, semantic text, OCR/ASR lexical và object/spatial evidence.
-4. Score từng nhánh được normalize trước khi weighted fusion/RRF.
-5. Reranker chỉ được trộn khi đã tải thành công; nếu không, hệ thống dùng raw fused score và renormalize trọng số còn hoạt động.
-6. KIS trả ranked candidates/review data; QA frontend gửi evidence đã chọn tới VLM endpoint; TRAKE xếp candidates của từng event theo frame order. Dense `TemporalAligner` hiện chưa được gọi từ request handler.
+`frontend/` gửi query tới `backend/`; backend nạp `OfflineSearchEngine`, Milvus
+Lite và manifest một lần khi khởi động. KIS/QA dùng chung retrieval. QA có thể
+gửi frame đã chọn đến AI Studio hoặc 9Router. TRAKE truy vấn từng event rồi
+kiểm tra thứ tự bằng `frame_id`; dense `TemporalAligner` chưa được nối vào
+request handler hiện tại. Candidate pool của API được cố định ở 100 cho mỗi
+query/event; `top_k` điều khiển số kết quả trả về.
 
-Không cộng trực tiếp cosine từ hai model có phân phối khác nhau nếu chưa normalize. Thiếu OpenCLIP hoặc reranker phải fallback, không gán điểm 0 rồi vẫn giữ nguyên trọng số.
-
-## 7. Service contract
-
-Chạy server:
+Khởi động với index đầy đủ:
 
 ```bash
-uv run --project environments/siglip2 python scripts/serve_offline_query.py \
-  --index workspace/offline_index_all_873 --host 0.0.0.0 --port 8765
+uv run --project environments/siglip2 \
+  python scripts/serve_offline_query.py \
+  --index workspace/offline_index_all_873 --host 127.0.0.1 --port 8765
 ```
 
-Endpoint:
+Hoặc dùng index nhỏ hiện có để thử giao diện:
 
-- `GET /api/health`: model/index availability.
-- `POST /api/query`, `POST /api/query/stream`: retrieval KIS/QA/TRAKE.
-- `POST /api/qa/answer`, `POST /api/qa/models`: QA với frame do FE chọn.
-- `GET /api/frame/{video_id}/{frame_id}`: trích frame qua manifest video path.
-- `GET /videos/{video_id}.mp4`, `GET /api/videos/{video_id}/metadata`: media.
-
-Backend mới nằm trong `backend/`, frontend trong `frontend/`; FastAPI phục vụ
-frontend cùng origin. `video_id` được ánh xạ sang `video_path` từ manifest,
-đường dẫn nguồn không được gửi tới browser. Restart service sau khi đổi code
-hoặc index.
-
-## 8. Remote VLM configuration
-
-`.env` tối thiểu:
-
-```env
-NINEROUTER_CHAT_URL=http://localhost:20128/v1/chat/completions
-NINEROUTER_MODEL=ag/gemini-3-flash-agent
-NINEROUTER_KEY=
-GEMINI_MODE=9router
-GEMINI_API_KEY=
-GEMINI_API_MODEL=gemini-2.5-flash
+```bash
+uv run --project environments/siglip2 \
+  python scripts/serve_offline_query.py \
+  --index workspace/offline_index_builder_refactor_test --port 8765 --no-warmup
 ```
 
-9Router là luồng enrichment mặc định. Một số tên file/stage còn chứa `gemini`
-để giữ tương thích artifact và scheduler cũ. QA trong frontend Flow C gửi ảnh
-và câu hỏi qua backend tới Google AI Studio hoặc 9Router theo provider.
+Mở `http://127.0.0.1:8765`. `GET /api/health` hiển thị model, index và
+Milvus collections đã nạp. Dừng service bằng Ctrl+C trước khi đổi code hoặc
+index. Có thể cấu hình `MILVUS_URI`, `MILVUS_COLLECTION_PREFIX`, `AIC_DEVICE`,
+`AIC_HOST`, `AIC_PORT` qua environment; URI mặc định là
+`<index>/milvus_lite.db`.
 
-## 9. Validation
+API chính:
 
-- Retrieval: MRR, R@5, R@10, R@20, R@100.
-- QA: video/frame-range match, answer exact/normalized/multi-answer accuracy.
-- TRAKE: đúng video, event recall và full-sequence accuracy.
-- Latency: retrieval, media decode, VLM first pass và refinement.
+| Endpoint | Chức năng |
+|---|---|
+| `GET /api/health` | Tình trạng engine và index. |
+| `POST /api/route` | Phân loại query KIS/QA/TRAKE. |
+| `POST /api/query`, `POST /api/query/stream` | Retrieval và kết quả cho KIS/QA/TRAKE. |
+| `POST /api/qa/answer`, `POST /api/qa/models` | Gọi QA provider và lấy danh sách model. |
+| `GET /api/frame/{video_id}/{frame_id}` | Giải mã/cached frame từ video nguồn. |
+| `GET /videos/{video_id}.mp4` | Stream video nguồn. |
+| `GET /api/videos/{video_id}/metadata` | FPS, frame count và duration. |
 
-Pseudo-label chỉ là tập đánh giá; không được đưa expected `video_id/frame_id` vào retrieval input. Tinh chỉnh fusion trên một split và báo cáo trên split khác để hạn chế overfit.
+Backend phân giải `video_id` qua `workspace/manifests/videos.parquet`; frontend
+không cần biết đường dẫn tuyệt đối của video.
 
-## 10. Deploy và backup
+## 3. Python environments
 
-Code lấy từ Git; dataset/model/index lấy từ GCS hoặc persistent volume. Trước khi destroy Vast instance:
+| Project | Workload chính |
+|---|---|
+| `environments/omnishotcut` | Shot segmentation với OmniShotCut. |
+| `environments/siglip2` | Sampling/index, SigLIP, BGE-M3, Milvus, query và web service. |
+| `environments/asr` | Faster-Whisper transcription. |
+| `environments/ocr` | PP-OCRv6 full-resolution OCR. |
+| `environments/objects` | YOLO-World object detection. |
+| `environments/gemini` | 9Router/VLM request preparation, calls và parsing. |
 
-1. Dừng worker sạch hoặc xác nhận SQLite đã flush.
-2. Sync `workspace/offline_index_all_873` và artifact cần resume lên GCS.
-3. Kiểm tra số file/kích thước ở đích.
-4. Không chỉ backup vector: phải kèm Parquet metadata và SQLite.
+Cài dependency theo workload bằng `uv sync --project environments/<name>`.
+Không dùng chung một virtualenv vì các project có dependency và runtime khác nhau.
 
-Các key/API credential không được ghi vào command history, log, commit hoặc ảnh chụp màn hình.
+## 4. Workspace artifact contract
 
-## 11. Troubleshooting nhanh
+Các đường dẫn runtime chính:
 
-- `LocalEntryNotFoundError` cùng `local_files_only=True`: model chưa có trong Hugging Face cache; tải trước rồi mới bật offline mode.
-- `401 API key required`: `.env` chưa được process hiện tại load hoặc key không được gửi trong Authorization header.
-- Scheduler đứng ở `pending`: dependency trước chưa completed hoặc artifact validation thất bại.
-- Kết quả QA đúng video nhưng sai chữ: kiểm tra full-resolution OCR/crop và frame provenance trước khi tăng top-k.
-- KIS sai “lần thứ hai/đầu tiên”: dùng dense review/refinement theo thời gian; không thay logic QA/TRAKE.
-- Query chậm: tách latency retrieval khỏi VLM call; tăng dataset chủ yếu ảnh hưởng ANN/search nhẹ, còn decode và remote VLM thường chiếm phần lớn.
+| Đường dẫn | Nội dung |
+|---|---|
+| `workspace/manifests/videos.parquet` | Video ID, source path và thông tin media sau audit. |
+| `workspace/shots/{video_id}/` | Kết quả shot boundary. |
+| `workspace/samples/{video_id}/` | Sampled frame IDs/metadata. |
+| `workspace/features/{encoder_id}/{video_id}/` | Dense visual features theo encoder. |
+| `workspace/keyframes/{video_id}/` | Final keyframe metadata. |
+| `workspace/asr/faster_whisper_large_v3/{video_id}.json` | Transcript và timestamps từ Faster-Whisper large-v3. |
+| `workspace/semantic_scenes/{video_id}/` | Scene-level evidence của Flow A. |
+| `workspace/objects_yoloworld/{video_id}/` | Object detections/spatial evidence. |
+| `workspace/ocr_fullres/{video_id}/` | Full-resolution OCR, crop và provenance. |
+| `workspace/scene_documents/{video_id}/` | Unified scene documents dùng cho index. |
+| `workspace/scheduler/jobs.sqlite3` | Trạng thái scheduler tổng quát. |
+| `workspace/scheduler/flow_a_jobs.sqlite3` | Trạng thái scheduler riêng Flow A. |
+| `workspace/offline_index*/` | Parquet metadata, vector `.npy`, SQLite và Milvus Lite index. |
+
+Một index serving cần tối thiểu scene/frame Parquet, vector nguồn tương ứng,
+`search.sqlite3`, `milvus_lite.db` và `milvus_report.json`. Nếu dùng OpenCLIP,
+cần cả `openclip_frame_keys.parquet`. Sau khi thay đổi embedding hoặc metadata,
+build lại Milvus trước khi khởi động service. Giữ các file Parquet/vector/SQLite/
+Milvus của cùng một lần build với nhau.
+
+## 5. Code map
+
+- `aic_pipeline/audit.py`, `paths.py`, `io.py`: audit dataset và quy ước đường dẫn/I/O.
+- `sampling.py`, `keyframe_selection.py`, `siglip_retrieval.py`: sampling, chọn keyframe và visual retrieval helpers.
+- `offline_search_engine.py`, `retrieval_fusion.py`, `fusion_profiles.py`: truy vấn, retrieval branches và fusion.
+- `query_understanding.py`, `query_transformer.py`, `task_router.py`: parse/expand query và chọn task.
+- `kis_review.py`, `qa_gemini.py`, `qa_reasoning.py`, `scene_evidence.py`: review KIS và chọn/ground QA evidence.
+- `temporal_alignment.py`, `temporal_reranker.py`, `xclip_reranker.py`: helpers đánh giá/refine thứ tự thời gian; không phải tất cả đều đang được gọi từ API.
+- `backend/runtime.py`, `services/`, `app.py`: khởi tạo engine và HTTP contract.
+- `scripts/README.md`: nhóm script production, build, validation và utility.
+
+## 6. Validation và dữ liệu cục bộ
+
+`tests/` chứa unit tests. Các script `evaluate_*`, `benchmark_*`,
+`optimize_fusion_profiles.py`, `select_fusion_config.py` và các builder
+`build_*pseudolabels.py` dùng cho validation/tuning; chúng không thay thế
+entrypoint xử lý dataset.
+
+Dataset, checkpoint, Milvus DB, cache và scheduler state là dữ liệu cục bộ.
+Trước khi dọn hoặc thay index, backup đúng artifact cần resume/serve. Không chỉ
+backup vector: Parquet metadata, SQLite FTS và Milvus report/database cũng cần
+được giữ đồng bộ. Không commit `.env` hoặc credential.

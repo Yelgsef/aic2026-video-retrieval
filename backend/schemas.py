@@ -13,7 +13,6 @@ class QueryRequest(BaseModel):
     query: str = Field(min_length=1, max_length=4000)
     query_transformer: bool = False
     top_k: int = Field(default=100, ge=1, le=1000)
-    candidate_k: int = Field(default=300, ge=1, le=2000)
     rerank_k: int = Field(default=30, ge=0, le=500)
     openclip: bool = True
     reranker_enabled: bool = True

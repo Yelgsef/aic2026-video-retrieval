@@ -43,7 +43,7 @@ async def query(body: QueryRequest, request: Request) -> dict:
     try:
         data = await asyncio.to_thread(
             execute_query, request.app.state.runtime, body.type, body.query.strip(),
-            top_k=body.top_k, candidate_k=body.candidate_k, rerank_k=body.rerank_k,
+            top_k=body.top_k, rerank_k=body.rerank_k,
             openclip=body.openclip, query_transformer=body.query_transformer,
             reranker_enabled=body.reranker_enabled,
         )
@@ -67,7 +67,7 @@ async def query_stream(body: QueryRequest, request: Request) -> StreamingRespons
 
             result_task = asyncio.create_task(asyncio.to_thread(
                 execute_query, request.app.state.runtime, body.type, body.query.strip(),
-                top_k=body.top_k, candidate_k=body.candidate_k, rerank_k=body.rerank_k,
+                top_k=body.top_k, rerank_k=body.rerank_k,
                 openclip=body.openclip, query_transformer=body.query_transformer,
                 reranker_enabled=body.reranker_enabled,
                 progress_callback=publish if body.type in {"KIS", "QA"} else None,

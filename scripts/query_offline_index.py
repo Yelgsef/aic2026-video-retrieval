@@ -27,7 +27,7 @@ def main() -> None:
                         help="Milvus Lite DB path; defaults to <index>/milvus_lite.db")
     parser.add_argument("--collection-prefix", default="aic")
     parser.add_argument("--top-k", type=int, default=20)
-    parser.add_argument("--candidate-k", type=int, default=300)
+    parser.add_argument("--candidate-k", type=int, default=100)
     parser.add_argument("--rerank-k", type=int, default=30)
     parser.add_argument("--rerank-batch-size", type=int, default=4)
     parser.add_argument("--no-reranker", action="store_true")

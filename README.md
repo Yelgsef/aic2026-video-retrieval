@@ -166,6 +166,9 @@ uv run --project environments/siglip2 python scripts/serve_offline_query.py \\
   --index workspace/offline_index_builder_refactor_test --port 8765 --no-warmup
 ~~~
 
+Backend cố định candidate pool ở 100 cho mỗi query và cho từng event của
+TRAKE; API không nhận cấu hình khác từ request. CLI cũng mặc định 100.
+
 Flow D-F dùng chung frontend và backend. KIS trả ranked candidates; QA nhận
 candidates rồi gửi frame/evidence đã chọn tới `/api/qa/answer`; TRAKE truy vấn
 từng event rồi xếp các frame theo thứ tự. Dense `TemporalAligner` refinement
@@ -174,7 +177,7 @@ cho KIS/TRAKE chưa được nối vào request handler hiện tại.
 ## Query KIS
 
 ~~~bash
-HF_HOME=workspace/hf-cache HF_HUB_OFFLINE=1 uv run --project environments/siglip2 python scripts/query_offline_index.py --index workspace/offline_index_all_873 --top-k 100 --candidate-k 500 --no-openclip "Một chiếc máy cày trên đồng lúa xanh"
+HF_HOME=workspace/hf-cache HF_HUB_OFFLINE=1 uv run --project environments/siglip2 python scripts/query_offline_index.py --index workspace/offline_index_all_873 --top-k 100 --candidate-k 100 --no-openclip "Một chiếc máy cày trên đồng lúa xanh"
 ~~~
 
 Bỏ --no-openclip khi muốn dùng OpenCLIP fusion.

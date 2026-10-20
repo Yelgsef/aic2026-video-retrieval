@@ -5,6 +5,8 @@ from typing import Any, Callable
 from aic_pipeline.task_router import route_query
 from backend.runtime import Runtime, public_search
 
+BACKEND_CANDIDATE_K = 100
+
 
 def _candidate_score(candidate: dict[str, Any]) -> float:
     return float(candidate.get("fusion_score", candidate.get("score", 0.0)))
@@ -51,13 +53,13 @@ def _rank_trake(event_results: list[dict[str, Any]], maximum: int = 10):
 
 
 def execute_query(runtime: Runtime, query_type: str, query: str, *, top_k: int = 100,
-                  candidate_k: int = 300, rerank_k: int = 30,
+                  rerank_k: int = 30,
                   openclip: bool = True, query_transformer: bool = False,
                   reranker_enabled: bool = True,
                   progress_callback: Callable[[dict[str, Any]], None] | None = None) -> dict[str, Any]:
     engine = runtime.engine
     if query_type != "TRAKE":
-        result = engine.search(query, top_k=top_k, candidate_k=candidate_k,
+        result = engine.search(query, top_k=top_k, candidate_k=BACKEND_CANDIDATE_K,
                                rerank_k=rerank_k if reranker_enabled else 0,
                                openclip=openclip and engine.openclip_available,
                                query_transformer=query_transformer,
@@ -67,7 +69,7 @@ def execute_query(runtime: Runtime, query_type: str, query: str, *, top_k: int =
     plan = route_query(query)
     if len(plan.events) < 2:
         raise ValueError("TRAKE requires at least two ordered events")
-    event_results = [engine.search(event, top_k=50, candidate_k=150,
+    event_results = [engine.search(event, top_k=50, candidate_k=BACKEND_CANDIDATE_K,
                                    rerank_k=12 if reranker_enabled else 0,
                                    openclip=False, query_transformer=query_transformer)
                     for event in plan.events]
