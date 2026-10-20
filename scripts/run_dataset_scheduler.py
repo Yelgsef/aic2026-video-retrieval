@@ -37,7 +37,7 @@ DEPENDENCY = {
 
 def configuration_hash() -> str:
     payload = {
-        "pipeline_version": "0.5.0",
+            "pipeline_version": "0.5.1",
         "sampling_stride": 5,
         "sampling_include_anchors": True,
         "sampling_boundary_radius": 0,
@@ -59,7 +59,8 @@ def configuration_hash() -> str:
         "object_model": "yolov8s-worldv2",
         "object_schema_version": "0.2.0",
         "object_confidence": 0.20,
-        "ocr_model": "PP-OCRv6-small-vi",
+        "ocr_detector": "PP-OCRv6_medium_det",
+        "ocr_recognizer": "PP-OCRv6_medium_rec",
         "ocr_confidence": 0.35,
         "ocr_gemini_threshold": 0.78,
         "ocr_batch_size": 16,
@@ -196,10 +197,11 @@ def artifact_valid(video_id: str, stage: str) -> bool:
         if stage == "fullres-ocr":
             table = pd.read_parquet(ROOT / "workspace" / "ocr_fullres" / video_id / "regions.parquet")
             report = json.loads((ROOT / "workspace" / "ocr_fullres" / video_id / "report.json").read_text(encoding="utf-8"))
-            return (len(table) == report.get("regions", -1) and report.get("frames", 0) > 0
+            return (len(table) == report.get("regions", -1) and report.get("expected_frames", 0) > 0
                     and report.get("complete") is True
-                    and report.get("det_model") == "PP-OCRv6_small_det"
-                    and report.get("rec_model") == "PP-OCRv6_small_rec")
+                    and report.get("decoded_frames") == report.get("expected_frames")
+                    and report.get("det_model") == "PP-OCRv6_medium_det"
+                    and report.get("rec_model") == "PP-OCRv6_medium_rec")
         if stage == "asr-normalize-prepare":
             path = ROOT / "workspace" / "asr_normalization" / video_id / "requests.jsonl"
             return path.exists() and (ROOT / "workspace" / "asr_normalization" / video_id / "report.json").exists()

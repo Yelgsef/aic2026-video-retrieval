@@ -15,7 +15,7 @@ def suspicious(segment: dict) -> bool:
     words = segment.get("words", [])
     low = sum(float(word.get("probability", 1)) < 0.72 for word in words)
     text = str(segment.get("text", ""))
-    return float(segment.get("avg_logprob", 0)) < -0.22 or low >= 2 or any(c.isdigit() for c in text)
+    return float(segment.get("avg_logprob", 0)) < -0.1 or low >= 2 or any(c.isdigit() for c in text)
 
 
 def main() -> None:

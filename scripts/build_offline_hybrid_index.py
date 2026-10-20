@@ -64,10 +64,11 @@ def main() -> None:
                 representative_frame_ids = [int(value) for value in scene.representative_frame_ids]
                 ocr_evidence = []
                 raw_document = document_json.get(str(scene.scene_id), {})
-                for line in raw_document.get("ocr_lines", []):
+                for line in (raw_document.get("ocr_lines", [])
+                             + raw_document.get("fullres_ocr_lines", [])):
                     if not isinstance(line, dict):
                         continue
-                    if line.get("frame_mapping_valid") and line.get("frame_id") is not None:
+                    if line.get("frame_id") is not None and line.get("frame_mapping_valid", True):
                         ocr_evidence.append({"text": str(line.get("text", "")),
                                              "frame_id": int(line["frame_id"])})
                 mask = (metadata.frame_id >= int(scene.start_frame)) & (metadata.frame_id < int(scene.end_frame_exclusive))

@@ -28,6 +28,14 @@ def unique(values: list[Any]) -> list[str]:
     return output
 
 
+def json_value(value: Any) -> Any:
+    if hasattr(value, "tolist"):
+        return value.tolist()
+    if hasattr(value, "item"):
+        return value.item()
+    raise TypeError(f"{type(value).__name__} is not JSON serializable")
+
+
 def load_gemini(path: Path) -> dict[str, dict[str, Any]]:
     if not path.exists():
         return {}
@@ -64,14 +72,19 @@ def main() -> None:
     scenes = pd.read_parquet(ROOT / "workspace" / "semantic_scenes" / args.video_id / "scenes.parquet")
     gemini_path = args.gemini or ROOT / "workspace" / "gemini_parsed" / args.video_id / "scenes.jsonl"
     gemini = load_gemini(gemini_path)
+    gemini_report_path = gemini_path.parent / "report.json"
+    gemini_report = (json.loads(gemini_report_path.read_text(encoding="utf-8"))
+                     if gemini_report_path.exists() else {})
     descriptions = [record.get("description", {}) for record in gemini.values()]
     ocr_recurrence = recurrence_counts(descriptions)
     scene_count = len(scenes)
     detections_path = ROOT / "workspace" / "objects_yoloworld" / args.video_id / "detections.parquet"
     detected_by_scene: dict[int, list[str]] = {}
     spatial_by_scene: dict[int, dict[str, Any]] = {}
+    object_rows = 0
     if detections_path.exists():
         detections = pd.read_parquet(detections_path)
+        object_rows = len(detections)
         spatial_by_scene = aggregate_scene_objects(detections)
         detections = detections.loc[detections.confidence.ge(0.20)]
         for scene_index, group in detections.groupby("scene_index"):
@@ -80,6 +93,27 @@ def main() -> None:
             detected_by_scene[int(scene_index)] = labels
     fullres_path = ROOT / "workspace" / "ocr_fullres" / args.video_id / "regions.parquet"
     fullres = pd.read_parquet(fullres_path) if fullres_path.exists() else pd.DataFrame()
+    fullres_report_path = fullres_path.parent / "report.json"
+    fullres_report = (json.loads(fullres_report_path.read_text(encoding="utf-8"))
+                      if fullres_report_path.exists() else {})
+    fullres_by_scene: dict[int, pd.DataFrame] = {}
+    fullres_all_by_scene: dict[int, pd.DataFrame] = {}
+    fullres_recurrence: Counter[str] = Counter()
+    if not fullres.empty:
+        for scene in scenes.itertuples(index=False):
+            scene_regions = fullres.loc[
+                (fullres.frame_id >= int(scene.start_frame))
+                & (fullres.frame_id < int(scene.end_frame_exclusive))]
+            fullres_all_by_scene[int(scene.scene_index)] = scene_regions
+            regions = scene_regions.loc[scene_regions.searchable.astype(bool)]
+            fullres_by_scene[int(scene.scene_index)] = regions
+            fullres_recurrence.update({
+                value for value in {
+                    str(text).strip().casefold()
+                    for text in regions.get("final_text", regions.text_raw).astype(str)
+                    if str(text).strip()
+                }
+            })
     asr_normalized_path = ROOT / "workspace" / "asr_normalization" / args.video_id / "normalized.json"
     asr_segments = (json.loads(asr_normalized_path.read_text(encoding="utf-8")).get("segments", [])
                     if asr_normalized_path.exists() else [])
@@ -95,21 +129,48 @@ def main() -> None:
         ocr_text_raw = unique([item.get("text", "") for item in ocr_lines])
         ocr_text, ocr_filtered = filter_ocr_lines(
             ocr_lines, recurrence=ocr_recurrence, scene_count=scene_count)
+        ocr_filtered = [{**item, "source": "vlm"} for item in ocr_filtered]
         fullres_ocr: list[str] = []
-        if not fullres.empty:
-            regions = fullres.loc[(fullres.frame_id >= int(scene.start_frame))
-                                  & (fullres.frame_id < int(scene.end_frame_exclusive))
-                                  & fullres.searchable.astype(bool)]
+        fullres_ocr_lines: list[dict[str, Any]] = []
+        fullres_ocr_filtered: list[dict[str, str]] = []
+        regions = fullres_by_scene.get(int(scene.scene_index), pd.DataFrame())
+        if not regions.empty:
             text_column = "final_text" if "final_text" in regions else "text_raw"
-            fullres_ocr = unique(regions[text_column].astype(str).tolist())
-        ocr_text_raw = unique(ocr_text_raw + fullres_ocr)
+            candidates = [{"text": str(row[text_column]), "frame_label": str(row["frame_id"])}
+                          for _, row in regions.iterrows()]
+            fullres_ocr, fullres_ocr_filtered = filter_ocr_lines(
+                candidates, recurrence=fullres_recurrence, scene_count=scene_count)
+            accepted = {text.casefold() for text in fullres_ocr}
+            fullres_ocr_lines = [
+                {"text": str(row[text_column]), "frame_id": int(row["frame_id"]),
+                 "pts_time": float(row["pts_time"]), "polygon": json_value(row["polygon"]),
+                 "confidence": float(row["confidence"]),
+                 "gemini_verified": bool(row.get("gemini_verified", False))}
+                for _, row in regions.iterrows()
+                if str(row[text_column]).strip().casefold() in accepted
+            ]
+        all_regions = fullres_all_by_scene.get(int(scene.scene_index), pd.DataFrame())
+        fullres_raw = (all_regions["text_raw"].astype(str).tolist()
+                       if not all_regions.empty else [])
+        ocr_text_raw = unique(ocr_text_raw + fullres_raw)
         ocr_text = unique(ocr_text + fullres_ocr)
+        local_fullres_filtered = [
+            {"text": str(row["text_raw"]), "reason": str(row["filter_reason"]),
+             "frame_label": str(row["frame_id"]), "source": "pp_ocr"}
+            for _, row in all_regions.iterrows()
+            if not bool(row["searchable"]) and row.get("filter_reason")
+        ] if not all_regions.empty else []
+        fullres_ocr_filtered = [
+            {**item, "source": "pp_ocr"} for item in fullres_ocr_filtered
+        ]
+        ocr_filtered.extend(local_fullres_filtered)
+        ocr_filtered.extend(fullres_ocr_filtered)
         normalized_parts = [str(item["normalized_text"]).strip() for item in asr_segments
                             if float(item["end"]) > float(scene.start_time)
                             and float(item["start"]) < float(scene.end_time)]
         normalized_asr = " ".join(part for part in normalized_parts if part) or str(scene.asr_exact or "")
         document = {
-            "schema_version": "0.4.0", "document_id": str(scene.scene_id), "video_id": args.video_id,
+            "schema_version": "0.5.0", "document_id": str(scene.scene_id), "video_id": args.video_id,
             "scene_index": int(scene.scene_index), "start_frame": int(scene.start_frame),
             "end_frame_exclusive": int(scene.end_frame_exclusive), "start_time": float(scene.start_time),
             "end_time": float(scene.end_time), "shot_ids": [int(v) for v in scene.shot_ids],
@@ -117,6 +178,7 @@ def main() -> None:
             "asr_text_raw": str(scene.asr_exact or ""), "asr_text": normalized_asr,
             "asr_context": str(scene.asr_context or ""),
             "visual_summary": str(description.get("summary_vi", "")), "ocr_lines": ocr_lines,
+            "fullres_ocr_lines": fullres_ocr_lines,
             "ocr_text_raw": ocr_text_raw, "ocr_text": ocr_text, "ocr_filtered": ocr_filtered,
             "people": unique(description.get("people", [])),
             "objects": unique(list(description.get("objects", [])) + detected_objects),
@@ -134,17 +196,78 @@ def main() -> None:
                            "vlm_enrichment": record.get("provenance"), "asr_model": "faster-whisper-large-v3",
                            "asr_normalization": "9router-conditional" if asr_segments else None,
                            "visual_model": "google/siglip2-so400m-patch14-384",
-                           "fullres_ocr_model": "PP-OCRv6-medium-vi" if fullres_ocr else None,
+                           "fullres_ocr_model": {
+                               "detector": fullres_report.get("det_model"),
+                               "recognizer": fullres_report.get("rec_model"),
+                           } if fullres_report else None,
                            "object_model": "yolov8s-worldv2" if detected_objects else None},
         }
         documents.append(document)
     output.mkdir(parents=True, exist_ok=True)
     jsonl = output / "scenes.jsonl"
-    jsonl.write_text("".join(json.dumps(doc, ensure_ascii=False) + "\n" for doc in documents), encoding="utf-8")
-    flat = [{k: v for k, v in doc.items() if k not in {"ocr_lines", "ocr_filtered", "provenance"}}
+    jsonl.write_text("".join(json.dumps(doc, ensure_ascii=False, default=json_value) + "\n"
+                                 for doc in documents), encoding="utf-8")
+    flat = [{k: v for k, v in doc.items() if k not in {
+        "ocr_lines", "fullres_ocr_lines", "ocr_filtered", "provenance"}}
             for doc in documents]
     pd.DataFrame(flat).to_parquet(output / "scenes.parquet", index=False)
-    report = {"schema_version": "0.4.0", "video_id": args.video_id, "documents": len(documents),
+    vlm_scene_ids = set(gemini)
+    has_vlm_file = gemini_path.exists()
+    vlm_coverage = len(vlm_scene_ids & set(scenes.scene_id.astype(str))) / max(1, len(scenes))
+    object_report_path = detections_path.parent / "report.json"
+    object_report = (json.loads(object_report_path.read_text(encoding="utf-8"))
+                     if object_report_path.exists() else {})
+    object_ready = bool(
+        detections_path.exists()
+        and object_report.get("decoded_frames") == object_report.get("final_frames")
+        and object_report.get("schema_version") == "0.2.0"
+    )
+    ocr_ready = bool(
+        fullres_path.exists() and fullres_report.get("complete") is True
+        and fullres_report.get("expected_frames", 0) > 0
+        and fullres_report.get("decoded_frames") == fullres_report.get("expected_frames")
+        and fullres_report.get("det_model") == "PP-OCRv6_medium_det"
+        and fullres_report.get("rec_model") == "PP-OCRv6_medium_rec"
+    )
+    source_status = {
+        "semantic_scenes": {
+            "available": True, "records": len(scenes),
+            "path": f"workspace/semantic_scenes/{args.video_id}/scenes.parquet",
+        },
+        "vlm_enrichment": {
+            "available": (has_vlm_file and vlm_coverage == 1
+                          and not gemini_report.get("errors")),
+            "file_present": has_vlm_file, "records": len(vlm_scene_ids),
+            "scene_coverage": vlm_coverage,
+            "path": str(gemini_path),
+        },
+        "object_detection": {
+            "available": object_ready, "file_present": detections_path.exists(),
+            "records": object_rows,
+            "decoded_frames": object_report.get("decoded_frames", 0),
+            "expected_frames": object_report.get("final_frames", 0),
+            "path": str(detections_path),
+        },
+        "fullres_ocr": {
+            "available": ocr_ready, "records": len(fullres),
+            "decoded_frames": fullres_report.get("decoded_frames", 0),
+            "expected_frames": fullres_report.get("expected_frames", 0),
+            "path": str(fullres_path),
+        },
+        "asr_normalization": {
+            "available": asr_normalized_path.exists(), "records": len(asr_segments),
+            "optional": True,
+            "path": str(asr_normalized_path),
+        },
+    }
+    warnings = []
+    for name in ("vlm_enrichment", "object_detection", "fullres_ocr"):
+        if not source_status[name]["available"]:
+            warnings.append(f"{name} input is missing or incomplete")
+    if source_status["vlm_enrichment"].get("scene_coverage", 0) < 1:
+        warnings.append("VLM enrichment does not cover every semantic scene")
+    report = {"schema_version": "0.5.0", "video_id": args.video_id, "documents": len(documents),
+              "sources": source_status, "warnings": warnings,
               "with_gemini": sum(doc["has_gemini"] for doc in documents),
               "with_object_detection": sum(doc["has_object_detection"] for doc in documents),
               "with_asr": sum(bool(doc["asr_text"]) for doc in documents),
@@ -153,6 +276,8 @@ def main() -> None:
               "ocr_filtered_lines": sum(len(doc["ocr_filtered"]) for doc in documents),
               "ocr_filter_reasons": dict(Counter(
                   row["reason"] for doc in documents for row in doc["ocr_filtered"])),
+              "ocr_filter_counts_by_source": dict(Counter(
+                  row.get("source", "unknown") for doc in documents for row in doc["ocr_filtered"])),
               "output": str(output)}
     (output / "report.json").write_text(json.dumps(report, ensure_ascii=False, indent=2), encoding="utf-8")
     print(json.dumps(report, ensure_ascii=False, indent=2))

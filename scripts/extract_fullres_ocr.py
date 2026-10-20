@@ -38,10 +38,14 @@ def main() -> None:
     parser.add_argument("--output-root", type=Path,
                         help="Alternative output root for audits; defaults to workspace/ocr_fullres")
     parser.add_argument("--batch-size", type=int, default=16)
-    parser.add_argument("--det-model", default="PP-OCRv6_small_det")
-    parser.add_argument("--rec-model", default="PP-OCRv6_small_rec")
+    parser.add_argument("--det-model", default="PP-OCRv6_medium_det")
+    parser.add_argument("--rec-model", default="PP-OCRv6_medium_rec")
     parser.add_argument("--force", action="store_true")
     args = parser.parse_args()
+    if args.batch_size < 1:
+        parser.error("--batch-size must be at least 1")
+    if args.max_gemini_crops < 0:
+        parser.error("--max-gemini-crops cannot be negative")
 
     output_root = args.output_root or (ROOT / "workspace" / "ocr_fullres")
     output = output_root / args.video_id
@@ -49,7 +53,10 @@ def main() -> None:
     if result_path.exists() and not args.force:
         report_path = output / "report.json"
         previous = json.loads(report_path.read_text(encoding="utf-8")) if report_path.exists() else {}
-        if previous.get("complete") is True:
+        if (previous.get("complete") is True
+                and previous.get("decoded_frames") == previous.get("expected_frames")
+                and previous.get("det_model") == args.det_model
+                and previous.get("rec_model") == args.rec_model):
             print(json.dumps({"video_id": args.video_id, "status": "exists", "output": str(result_path)}))
             return
     manifest = pd.read_parquet(ROOT / "workspace/manifests/videos.parquet")
@@ -71,9 +78,20 @@ def main() -> None:
         index = ROOT / "workspace/retrieval/google_siglip2_so400m_patch14_384" / (
             f"{args.video_id}_final_from_google_siglip2_base_patch16_224")
         frames = pd.read_parquet(index / "metadata.parquet").sort_values("frame_id")
-    source_frame_count = len(frames)
     if args.limit_frames:
         frames = frames.head(args.limit_frames)
+
+    scenes = pd.read_parquet(ROOT / "workspace/semantic_scenes" / args.video_id / "scenes.parquet")
+    scenes = scenes.sort_values("start_frame")
+    starts = scenes.start_frame.to_numpy(dtype="int64")
+    ends = scenes.end_frame_exclusive.to_numpy(dtype="int64")
+    scene_indices = scenes.scene_index.to_numpy(dtype="int64")
+
+    def scene_for_frame(frame_id: int) -> int | None:
+        position = int(starts.searchsorted(frame_id, side="right")) - 1
+        if position >= 0 and frame_id < ends[position]:
+            return int(scene_indices[position])
+        return None
 
     from paddleocr import PaddleOCR
     engine = PaddleOCR(text_detection_model_name=args.det_model,
@@ -97,16 +115,21 @@ def main() -> None:
                 xs, ys = [p[0] for p in points], [p[1] for p in points]; pad = 12
                 x1, y1 = max(0, min(xs) - pad), max(0, min(ys) - pad)
                 x2, y2 = min(image.shape[1], max(xs) + pad), min(image.shape[0], max(ys) + pad)
-                row = {"video_id": args.video_id, "frame_id": frame_id, "pts_time": float(frame.pts_time),
+                scene_index = scene_for_frame(frame_id)
+                row = {"video_id": args.video_id, "scene_index": scene_index,
+                       "frame_id": frame_id, "pts_time": float(frame.pts_time),
                        "region_index": region_index, "text_raw": text, "confidence": score,
                        "polygon": points, "searchable": bool(searchable),
                        "filter_reason": rejected[0]["reason"] if rejected else None,
                        "needs_gemini": False, "crop_path": None}
                 if searchable and score < args.gemini_threshold and x2 > x1 and y2 > y1:
                     crop_path = crop_dir / f"f{frame_id:09d}_r{region_index:03d}.jpg"
-                    cv2.imwrite(str(crop_path), image[y1:y2, x1:x2], [cv2.IMWRITE_JPEG_QUALITY, 94])
+                    if not cv2.imwrite(str(crop_path), image[y1:y2, x1:x2],
+                                       [cv2.IMWRITE_JPEG_QUALITY, 94]):
+                        raise OSError(f"Could not write OCR crop: {crop_path}")
                     row["needs_gemini"], row["crop_path"] = True, str(crop_path)
-                    candidates.append({"frame_id": frame_id, "region_index": region_index,
+                    candidates.append({"scene_index": scene_index, "frame_id": frame_id,
+                                       "region_index": region_index,
                                        "local_text": text, "confidence": score, "crop_path": str(crop_path)})
                 rows.append(row)
 
@@ -115,11 +138,13 @@ def main() -> None:
     last_frame = max(wanted) if wanted else -1
     capture = cv2.VideoCapture(str(video_path)); batch_images, batch_rows = [], []
     frame_id = 0
+    decoded_frames = 0
     while frame_id <= last_frame:
         ok, image = capture.read()
         if not ok:
             break
         if frame_id in wanted:
+            decoded_frames += 1
             batch_images.append(image); batch_rows.append(wanted[frame_id])
             if len(batch_images) >= args.batch_size:
                 process_batch(batch_images, batch_rows); batch_images, batch_rows = [], []
@@ -128,24 +153,41 @@ def main() -> None:
         process_batch(batch_images, batch_rows)
     capture.release()
     # Spend Gemini only on the least confident useful regions.
-    allowed = {(x["frame_id"], x["region_index"]) for x in
-               sorted(candidates, key=lambda x: x["confidence"])[:args.max_gemini_crops]}
+    by_scene: dict[int | None, list[dict]] = {}
+    for candidate in candidates:
+        by_scene.setdefault(candidate["scene_index"], []).append(candidate)
+    for values in by_scene.values():
+        values.sort(key=lambda x: x["confidence"])
+    selected = []
+    # Round-robin scenes so text-heavy scenes do not consume the full crop budget.
+    while len(selected) < args.max_gemini_crops:
+        added = False
+        for values in by_scene.values():
+            if values:
+                selected.append(values.pop(0))
+                added = True
+                if len(selected) >= args.max_gemini_crops:
+                    break
+        if not added:
+            break
+    allowed = {(x["frame_id"], x["region_index"]) for x in selected}
     for row in rows:
         if row["needs_gemini"] and (row["frame_id"], row["region_index"]) not in allowed:
             row["needs_gemini"] = False
-    selected = [x for x in candidates if (x["frame_id"], x["region_index"]) in allowed]
     pd.DataFrame(rows).to_parquet(result_path, index=False)
     (output / "gemini_candidates.jsonl").write_text(
         "".join(json.dumps(x, ensure_ascii=False) + "\n" for x in selected), encoding="utf-8")
     report = {"video_id": args.video_id, "det_model": args.det_model, "rec_model": args.rec_model,
               "frame_stride": args.frame_stride or None,
-              "frames": len(frames), "source_frames": source_frame_count,
-              "complete": len(frames) == source_frame_count, "regions": len(rows),
+              "expected_frames": len(frames), "decoded_frames": decoded_frames,
+              "complete": decoded_frames == len(frames), "regions": len(rows),
               "searchable_regions": sum(x["searchable"] for x in rows),
               "filtered_regions": sum(not x["searchable"] for x in rows),
               "gemini_candidates": len(selected), "output": str(result_path)}
     (output / "report.json").write_text(json.dumps(report, ensure_ascii=False, indent=2), encoding="utf-8")
     print(json.dumps(report, ensure_ascii=False, indent=2))
+    if not report["complete"]:
+        raise RuntimeError(f"Decoded {decoded_frames}/{len(frames)} requested OCR frames")
 
 
 if __name__ == "__main__":
