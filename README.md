@@ -3,7 +3,7 @@
 Hệ thống xử lý video offline và cung cấp backend/frontend cho ba dạng truy vấn:
 
 - KIS: tìm đoạn/frame phù hợp với mô tả.
-- QA: tìm bằng chứng rồi trả lời bằng Gemini qua 9Router.
+- QA: tìm bằng chứng; frontend có thể gửi frame đã chọn tới Google AI Studio.
 - TRAKE: tìm chuỗi sự kiện theo đúng thứ tự thời gian.
 
 ## Tài liệu
@@ -32,7 +32,9 @@ Qwen chỉ phân tích query lúc truy vấn; bật Qwen không yêu cầu embed
 - `scripts/run_dataset_scheduler.py`: chạy và resume các stage offline rộng hơn theo video.
 - `scripts/run_full_dataset_supervisor.py`: điều phối nhiều GPU và enrichment qua 9Router.
 - `scripts/run_gemini_subset_supervisor.py`: supervisor enrichment/index cho một tập video. Tên file được giữ để tương thích lệnh cũ; luồng hiện tại gọi 9Router, không phải Gemini Batch API.
-- `scripts/serve_offline_query.py`: backend KIS, QA và TRAKE.
+- `backend/`: FastAPI backend cho Flow C, Milvus Lite và media.
+- `frontend/`: giao diện tìm kiếm KIS, QA, TRAKE và kiểm tra frame.
+- `scripts/serve_offline_query.py`: entrypoint tương thích để chạy backend Flow C.
 - `scripts/query_offline_index.py`: truy vấn index bằng CLI.
 
 Các script còn lại thuộc nhóm build artifact hoặc validation. Xem `scripts/README.md` trước khi chạy riêng từng stage.
@@ -50,7 +52,7 @@ Các script còn lại thuộc nhóm build artifact hoặc validation. Xem `scri
 | Object evidence | YOLO-World; GroundingDINO dùng có điều kiện trong QA |
 | Scene/text vectors | BGE-M3 |
 | Query understanding | Qwen2.5 1.5B local, tùy chọn |
-| VLM enrichment/QA | Gemini qua 9Router; direct Gemini API là backend lựa chọn |
+| VLM enrichment | Gemini qua 9Router; QA trong Flow C gọi Google AI Studio |
 
 BEiT-3 và pipeline CLIP cũ đã được loại khỏi repository vì không còn thuộc luồng production.
 
@@ -129,30 +131,45 @@ set -a; source .env; set +a
 curl -sS "http://localhost:20128/v1/models"
 ~~~
 
-9Router dùng cho Gemini enrichment và QA online; BGE-M3, SigLIP2, OpenCLIP
-và Qwen có thể chạy local.
+9Router dùng cho VLM enrichment và optional ASR/OCR correction; BGE-M3,
+SigLIP2, OpenCLIP và Qwen có thể chạy local. QA trong Flow C hỗ trợ Google AI
+Studio và 9Router theo provider được chọn trong frontend.
 
-QA hỗ trợ hai mode: `9router` (mặc định) và `gemini_api`. Mode được chọn theo
-từng request, không cần restart hoặc embed lại.
-
-## Backend HTTP
+## Frontend và backend Flow C
 
 ~~~bash
-HF_HOME=workspace/hf-cache HF_HUB_OFFLINE=1 uv run --project environments/siglip2 python scripts/serve_offline_query.py --index workspace/offline_index_all_873 --port 8765
+uv run --project environments/siglip2 python scripts/serve_offline_query.py --index workspace/offline_index_all_873 --port 8765
 ~~~
 
-Endpoint: GET /health, POST /route, POST /query (KIS), POST /answer (QA),
-POST /trake (TRAKE), GET /frame và GET /video.
+Backend nạp `OfflineSearchEngine` và các collection Milvus Lite một lần khi
+khởi động. Milvus Lite phục vụ ANN vector search; `search.sqlite3` vẫn được
+dùng cho lexical FTS/fuzzy và lookup metadata. `MILVUS_URI` (hoặc `--milvus-uri`) và
+`MILVUS_COLLECTION_PREFIX` (hoặc `--collection-prefix`) cấu hình database.
+Mặc định database là `<index>/milvus_lite.db`, prefix là `aic`. Tắt warmup
+bằng `--no-warmup` nếu cần khởi động nhanh hơn để debug.
 
 ~~~bash
-curl http://127.0.0.1:8765/health
+curl http://127.0.0.1:8765/api/health
 ~~~
 
-## Frontend
+Frontend trong `frontend/` được FastAPI phục vụ cùng origin tại
+`http://127.0.0.1:8765`. API query dùng `/api/query` hoặc
+`/api/query/stream`; frame và video dùng `/api/frame/{video_id}/{frame_id}` và
+`/videos/{video_id}.mp4`. Backend ánh xạ `video_id` qua
+`workspace/manifests/videos.parquet`; FE không gửi hoặc đọc đường dẫn video.
+Sau khi đổi code/index, dừng server bằng Ctrl+C rồi chạy lại.
 
-Frontend ở web/index.html và gọi backend localhost. Mở http://127.0.0.1:8765.
-Chọn AUTO, KIS, QA hoặc TRAKE. Sau khi đổi code/index, dừng server bằng Ctrl+C
-rồi chạy lại.
+Khi thử giao diện, có thể trỏ vào index nhỏ đã build sẵn:
+
+~~~bash
+uv run --project environments/siglip2 python scripts/serve_offline_query.py \\
+  --index workspace/offline_index_builder_refactor_test --port 8765 --no-warmup
+~~~
+
+Flow D-F dùng chung frontend và backend. KIS trả ranked candidates; QA nhận
+candidates rồi gửi frame/evidence đã chọn tới `/api/qa/answer`; TRAKE truy vấn
+từng event rồi xếp các frame theo thứ tự. Dense `TemporalAligner` refinement
+cho KIS/TRAKE chưa được nối vào request handler hiện tại.
 
 ## Query KIS
 
@@ -163,35 +180,20 @@ HF_HOME=workspace/hf-cache HF_HUB_OFFLINE=1 uv run --project environments/siglip
 Bỏ --no-openclip khi muốn dùng OpenCLIP fusion.
 
 ~~~bash
-curl -X POST http://127.0.0.1:8765/query -H "Content-Type: application/json" -d '{"query":"Một chiếc máy cày trên đồng lúa xanh","top_k":20,"query_transformer":true}'
+curl -X POST http://127.0.0.1:8765/api/query -H "Content-Type: application/json" -d '{"type":"KIS","query":"Một chiếc máy cày trên đồng lúa xanh","top_k":20,"query_transformer":true}'
 ~~~
 
-## Query QA
+Mẫu request API dùng contract FE:
 
 ~~~bash
-curl -X POST http://127.0.0.1:8765/answer -H "Content-Type: application/json" -d '{"query":"Dòng chữ nào trong cuốn sách được in đỏ?","vqa_candidates":12,"query_transformer":true}'
+curl -X POST http://127.0.0.1:8765/api/query \
+  -H "Content-Type: application/json" \
+  -d '{"type":"KIS","query":"Một chiếc máy cày trên đồng lúa xanh","top_k":20,"query_transformer":true}'
 ~~~
 
-QA cần model/credential Gemini qua 9Router. UNCERTAIN thường do chữ quá nhỏ
-hoặc bằng chứng hình ảnh yếu, không nhất thiết phải embed lại.
-
-Gọi trực tiếp Gemini API thay vì 9Router:
-
-~~~bash
-curl -X POST http://127.0.0.1:8765/answer -H "Content-Type: application/json" -d '{"query":"Dòng chữ nào trong cuốn sách được in đỏ?","gemini_mode":"gemini_api","vqa_candidates":12,"query_transformer":true}'
-~~~
-
-Request không có `gemini_mode` dùng `GEMINI_MODE` trong `.env`, mặc định là
-`9router`. Mode `gemini_api` cần `GEMINI_API_KEY`; mode `9router` cần các biến
-`NINEROUTER_*` tương ứng.
-
-## Query TRAKE
-
-~~~bash
-curl -X POST http://127.0.0.1:8765/trake -H "Content-Type: application/json" -d '{"query":"Đầu tiên có xe máy cày trên đồng lúa, sau đó có các vận động viên xe đạp","query_transformer":true}'
-~~~
-
-TRAKE yêu cầu ít nhất hai sự kiện có thứ tự.
+Đổi `type` thành `QA` hoặc `TRAKE` cho các tác vụ tương ứng. QA trả về
+ candidates; FE gửi ảnh frame đã chọn tới `/api/qa/answer`. Endpoint hỗ trợ
+Google AI Studio và 9Router.
 
 ## Google Cloud Storage
 
@@ -281,8 +283,9 @@ uv run --project environments/siglip2 python scripts/build_milvus_index.py \
 
 Builder kiểm tra top-k Milvus với exact cosine search trên một số vector mẫu,
 rồi ghi `milvus_report.json` gồm số lượng, chiều và recall từng collection.
-Hiện query engine vẫn dùng NumPy dense scoring; tạo Milvus index chưa tự chuyển
-online retrieval sang ANN.
+Query CLI và service đọc Milvus Lite để lấy top-k candidates cho SigLIP, BGE-M3
+và OpenCLIP; SQLite vẫn xử lý lexical/fuzzy search. Sau khi rebuild embedding
+artifact, cần chạy lại builder Milvus để cập nhật collections và report.
 
 ## Bảo mật và bàn giao
 

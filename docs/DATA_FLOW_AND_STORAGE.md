@@ -80,12 +80,14 @@ flowchart LR
     FIDX --> BUILD["Build offline hybrid index"]
     SD --> BUILD
     SCENEPQ --> BUILD
-    BUILD --> INDEX["workspace/offline_index*/\nParquet + NumPy + search.sqlite3"]
+    BUILD --> INDEX["workspace/offline_index*/\nscenes/frames.parquet + SigLIP vectors\n+ search.sqlite3"]
     INDEX --> BGE["Build BGE-M3 scene vectors"]
     BGE --> INDEX
-    VIDEO --> OPEN["Build optional OpenCLIP frame index"]
+    MANIFEST --> OPEN["Build optional OpenCLIP frame index"]
     INDEX --> OPEN
     OPEN --> INDEX
+    INDEX --> MILVUS["Build Milvus Lite HNSW index"]
+    MILVUS --> FINALINDEX["milvus_lite.db\n+ milvus_report.json"]
 ```
 
 Trong sơ đồ, `{video_id}` là ID như `L21_V001`. Đường dẫn video gốc được lấy
@@ -95,6 +97,13 @@ cần xử lý và timestamp/shot tương ứng. Transcript thô đã được F
 tạo ở Flow A và nằm trong `scenes.parquet` dưới dạng `asr_exact`/`asr_context`;
 nhánh ASR ở Flow B chỉ sửa có điều kiện các đoạn đáng ngờ. Unified scene
 documents lấy ASR thô từ semantic scenes và chỉ đọc `normalized.json` nếu có.
+
+Các bước đóng gói index chạy theo thứ tự: `build_offline_hybrid_index.py` tạo
+scene/frame metadata, SigLIP vectors và SQLite FTS; `build_bge_m3_scene_index.py`
+tạo các vector văn bản BGE-M3; `build_openclip_frame_index.py` (tùy chọn) đọc
+frame metadata cùng video gốc để tạo OpenCLIP vectors; cuối cùng
+`build_milvus_index.py` đọc các vector và metadata đã tạo để lập ANN collections.
+Milvus không tính lại embeddings và không thay thế các file Parquet/NumPy nguồn.
 
 Enrichment branches có thể chạy độc lập sau khi artifact đầu vào sẵn sàng.
 `run_flow_a_scheduler.py` điều phối riêng Flow A sau khi manifest đã sẵn sàng.
@@ -109,21 +118,25 @@ documents đã sẵn sàng.
 
 ```mermaid
 flowchart LR
-    USER["người dùng"] --> UI["web/index.html"]
-    UI -->|POST /route, /query, /answer hoặc /trake| API["serve_offline_query.py"]
+    USER["người dùng"] --> UI["frontend/index.html"]
+    UI -->|POST /api/query hoặc /api/query/stream| API["backend/app.py"]
     API --> ROUTER["task_router.py\nKIS / QA / TRAKE"]
     ROUTER --> PLAN["query_understanding.py\n+ optional Query Transformer/Qwen"]
     PLAN --> ENGINE["OfflineSearchEngine"]
-    INDEX["offline_index*/\nvisual + text vectors, SQLite FTS"] --> ENGINE
+    INDEX["offline_index*/\nMilvus Lite vectors + SQLite FTS/fuzzy"] --> ENGINE
     ENGINE --> RETRIEVE["visual: SigLIP2 + optional OpenCLIP\ntext: BGE-M3\nlexical: FTS/fuzzy\nconstraints: object/spatial"]
     RETRIEVE --> FUSION["normalize + fusion\n+ optional reranking"]
     FUSION --> CANDIDATES["ranked scene/frame candidates"]
     CACHE["query_transformer_cache.sqlite3"] -. optional cached parse .-> PLAN
-    VIDEO["archive/video/"] --> MEDIA["GET /frame, GET /video"]
+    MANIFEST --> MEDIA["GET /api/frame/{video_id}/{frame_id}\nGET /videos/{video_id}.mp4"]
     MEDIA --> UI
 ```
 
 ### Flow D — KIS: tìm video/frame (online)
+
+Luồng đang chạy dùng shared retrieval của Flow C để xếp hạng candidates và
+tạo review pack. Dense moment refinement được thiết kế nhưng chưa được gọi từ
+request handler hiện tại.
 
 ```mermaid
 flowchart LR
@@ -136,6 +149,9 @@ flowchart LR
 ```
 
 ### Flow E — QA: tìm evidence rồi trả lời (online)
+
+Backend trả candidates; frontend chọn frame/evidence và gọi riêng
+`POST /api/qa/answer` để gửi câu hỏi cùng ảnh tới Google AI Studio hoặc 9Router.
 
 ```mermaid
 flowchart LR
@@ -151,6 +167,11 @@ flowchart LR
 
 ### Flow F — TRAKE: tìm chuỗi sự kiện theo thứ tự (online)
 
+Request handler hiện tách query thành event, truy vấn từng event qua cùng
+`OfflineSearchEngine`, rồi kiểm tra thứ tự candidates bằng `frame_id`. Dense
+`TemporalAligner` trong sơ đồ là bước refinement dự kiến, chưa được nối vào
+handler hiện tại.
+
 ```mermaid
 flowchart LR
     QUERY["ordered event query"] --> SPLIT["split into events"]
@@ -162,9 +183,11 @@ flowchart LR
     ALIGN --> OUT["TRAKE response\nvideo_id + ordered frame_ids"]
 ```
 
-Flow D-F nhận candidates từ Flow C; output quay về service dưới dạng JSON.
-Service trả response cho frontend. `/frame` giải mã và cache JPEG từ video gốc;
-`/video` stream video gốc, không sao chép media vào index.
+Flow D/E dùng chung retrieval candidates từ engine; TRAKE tạo retrieval riêng
+cho từng event trong query. Output quay về service dưới dạng JSON. Service trả
+response cho frontend. `/api/frame/{video_id}/{frame_id}` giải mã
+và cache JPEG từ video trong manifest; `/videos/{video_id}.mp4` stream video
+gốc, không sao chép media vào index.
 
 `run_flow_a_scheduler.py` tracks Flow A independently in its own SQLite database. `run_dataset_scheduler.py` tracks broader local processing/enrichment stages; the full-dataset and Gemini-subset supervisors coordinate those stages and downstream index jobs. The schedulers themselves do not build a global index.
 
@@ -205,19 +228,19 @@ Default output is `workspace/offline_index/`; production can build other named r
 | `frame_embeddings_openclip.npy` | Optional OpenCLIP frame vectors; aligned with `frames.parquet`. `openclip_frame_keys.parquet` is the incremental-build key sidecar. |
 | `search.sqlite3` | `scenes` lookup table and FTS5 tables `scene_fts` and `fuzzy_fts` for lexical and character n-gram retrieval. |
 | `report.json`, `bge_m3_report.json`, `openclip_report.json` | Build coverage, dimensions, skips and model details. |
-| `milvus_lite.db` | Optional derived Milvus Lite database with HNSW/COSINE collections for available scene and frame embedding matrices. |
-| `milvus_report.json` | Optional collection counts, vector dimensions, HNSW settings and sampled ANN recall against exact cosine search. |
+| `milvus_lite.db` | Derived Milvus Lite database with HNSW/COSINE collections for scene and frame vectors; required by the current `OfflineSearchEngine`. |
+| `milvus_report.json` | Collection counts, vector dimensions, source fingerprints, HNSW settings and sampled ANN recall against exact cosine search; required to validate the database at engine startup. |
 
 `row_id`/array position is the canonical join for scene vectors; `scene_row` joins frame metadata to a scene. SQLite FTS uses one-based FTS rowids while its row lookup and NumPy/Parquet indices are zero-based; the search engine converts between them. Keep metadata and vector files from the same index build together.
 
-`scripts/build_milvus_index.py` is an optional final build step after the global index, BGE-M3 and OpenCLIP builders. It reads the existing `.npy` and Parquet files without recomputing embeddings. Scene vectors are split into `scene_siglip` and four BGE collections; frame vectors are split into `frame_siglip` and optional `frame_openclip`. It builds HNSW indexes with COSINE distance, then samples each collection and records recall against exact NumPy cosine search. Milvus is a derived ANN index; the Parquet and NumPy files remain its reproducible sources. The current `OfflineSearchEngine` still uses NumPy scoring, so building Milvus alone does not change online query behavior. SQLite remains the lexical/fuzzy search index.
+`scripts/build_milvus_index.py` is the final index step after the global index, BGE-M3 and optional OpenCLIP builders. It reads the existing `.npy` and Parquet files without recomputing embeddings. Scene vectors are split into `scene_siglip` and four BGE collections; frame vectors are split into `frame_siglip` and optional `frame_openclip`. If Gemini text vectors exist at build time, it also creates `gemini_text`. The builder creates HNSW indexes with COSINE distance, samples each collection and records recall against exact NumPy cosine search. Milvus is a derived ANN index; Parquet and NumPy remain its reproducible sources.
 
 ## 4. Truy vấn online và dữ liệu runtime
 
-1. `POST /route` classifies a query as KIS, QA or TRAKE. The service can also route automatically when `/query` is called.
-2. `OfflineSearchEngine.search` constructs query intent/variants, optionally expands with local Qwen, and retrieves from SigLIP2, BGE-M3, SQLite FTS/fuzzy matching, object/spatial evidence and optional OpenCLIP. Scores are fused and candidates may be reranked.
+1. FE sends the selected task and query to `POST /api/query` or `/api/query/stream`.
+2. `OfflineSearchEngine.search` constructs query intent/variants, optionally expands with local Qwen, and retrieves top-k candidates from Milvus HNSW for SigLIP2, BGE-M3 and optional OpenCLIP. SQLite FTS/fuzzy search, object/spatial evidence and the reranker remain separate branches in score fusion.
 3. KIS returns ranked scenes/frames and a review pack. Optional moment refinement and TRAKE use dense stride-5 vectors in `workspace/features/google_siglip2_base_patch16_224/`.
-4. QA retrieves scene evidence, then uses local exact OCR when it can answer directly or sends selected frame evidence to Gemini through 9Router (default) or the direct Gemini API.
+4. QA retrieves scene/frame candidates; FE can send selected images to `/api/qa/answer` through Google AI Studio or 9Router.
 5. TRAKE retrieves each ordered event and aligns event frames chronologically inside the candidate video.
 6. The service returns JSON; the frontend displays results and serves media from the same backend.
 
@@ -254,5 +277,5 @@ Validation and tuning scripts create datasets, pseudo-labels, review packs and r
 - `scripts/run_full_dataset_supervisor.py`, `scripts/run_gemini_subset_supervisor.py`: orchestration around local stages, remote enrichment and index builds.
 - `scripts/build_offline_hybrid_index.py`, `scripts/build_bge_m3_scene_index.py`, `scripts/build_openclip_frame_index.py`: global index assembly.
 - `aic_pipeline/offline_search_engine.py`: online retrieval and fusion over the persisted index.
-- `scripts/serve_offline_query.py`, `web/index.html`: HTTP contract, media access and browser UI.
+- `backend/`, `frontend/`, `scripts/serve_offline_query.py`: Flow C HTTP contract, media access, and browser UI.
 - `aic_pipeline/temporal_alignment.py`, `aic_pipeline/qa_gemini.py`, `aic_pipeline/kis_review.py`: task-specific temporal, QA evidence and KIS review behavior.

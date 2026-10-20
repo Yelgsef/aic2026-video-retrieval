@@ -23,6 +23,9 @@ def main() -> None:
     parser = argparse.ArgumentParser(description="Query the canonical offline multi-model retrieval engine.")
     parser.add_argument("query")
     parser.add_argument("--index", type=Path, default=ROOT / "workspace/offline_index")
+    parser.add_argument("--milvus-uri", type=Path,
+                        help="Milvus Lite DB path; defaults to <index>/milvus_lite.db")
+    parser.add_argument("--collection-prefix", default="aic")
     parser.add_argument("--top-k", type=int, default=20)
     parser.add_argument("--candidate-k", type=int, default=300)
     parser.add_argument("--rerank-k", type=int, default=30)
@@ -36,18 +39,22 @@ def main() -> None:
     parser.add_argument("--reranker-fusion", choices=("rank", "score", "hybrid", "auto"), default="auto")
     parser.add_argument("--device")
     args = parser.parse_args()
-    engine = OfflineSearchEngine(ROOT, args.index, args.device)
+    engine = OfflineSearchEngine(ROOT, args.index, args.device,
+                                 args.milvus_uri, args.collection_prefix)
     task = route_query(args.query)
     calibrate_openclip = task.task == "KIS" if args.calibrate_openclip is None else args.calibrate_openclip
-    result = engine.search(
-        args.query, top_k=args.top_k, candidate_k=args.candidate_k,
-        rerank_k=0 if args.no_reranker else args.rerank_k,
-        rerank_batch_size=args.rerank_batch_size,
-        fusion_mode=args.fusion_mode, field_aware=args.field_aware,
-        openclip=args.openclip, visual_pooling=args.visual_pooling,
-        calibrate_openclip=calibrate_openclip, reranker_fusion=args.reranker_fusion,
-    )
-    print(json.dumps(result, ensure_ascii=False, indent=2))
+    try:
+        result = engine.search(
+            args.query, top_k=args.top_k, candidate_k=args.candidate_k,
+            rerank_k=0 if args.no_reranker else args.rerank_k,
+            rerank_batch_size=args.rerank_batch_size,
+            fusion_mode=args.fusion_mode, field_aware=args.field_aware,
+            openclip=args.openclip, visual_pooling=args.visual_pooling,
+            calibrate_openclip=calibrate_openclip, reranker_fusion=args.reranker_fusion,
+        )
+        print(json.dumps(result, ensure_ascii=False, indent=2))
+    finally:
+        engine.close()
 
 
 if __name__ == "__main__":

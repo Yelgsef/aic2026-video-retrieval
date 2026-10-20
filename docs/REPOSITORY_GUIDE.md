@@ -10,7 +10,8 @@ Tài liệu này mô tả repository đang dùng, không mô tả các baseline 
 | `scripts/` | Entrypoint chạy stage, scheduler, serving và benchmark | Có |
 | `environments/` | Các môi trường `uv` độc lập theo workload | Có, trừ `.venv` |
 | `tests/` | Unit test cho sampling, fusion, grounding, routing và temporal alignment | Có |
-| `web/` | Frontend tĩnh cho KIS/QA/TRAKE | Có |
+| `frontend/` | Frontend tĩnh cho KIS/QA/TRAKE | Có |
+| `backend/` | FastAPI API, retrieval runtime và media/QA services | Có |
 | `third_party/OmniShotCut` | Git submodule của OmniShotCut | Có dưới dạng submodule |
 | `archive/video/` | Video dataset gốc | Không |
 | `models/`, `weights/` | Checkpoint tải về | Không |
@@ -108,7 +109,7 @@ Các đường dẫn chính dưới `workspace/`:
 - `scheduler/jobs.sqlite3`: trạng thái resume.
 - `offline_index_all_873/`: index serving đầy đủ.
 
-Index serving tối thiểu cần `scenes.parquet`, `frames.parquet`, visual/text `.npy` và `search.sqlite3`. `frame_id`, `video_id`, timestamps và scene index phải luôn được giữ cùng vector.
+Index serving cần `scenes.parquet`, `frames.parquet`, các vector nguồn `.npy`, `search.sqlite3` và `milvus_lite.db` cùng `milvus_report.json`. Milvus Lite phục vụ ANN vector retrieval; SQLite FTS/fuzzy vẫn phục vụ lexical retrieval và metadata lookup. `frame_id`, `video_id`, timestamps và scene index phải luôn được giữ cùng vector. Sau khi rebuild vector, chạy lại `scripts/build_milvus_index.py` trước khi khởi động query engine.
 
 ## 6. Retrieval online
 
@@ -117,7 +118,7 @@ Index serving tối thiểu cần `scenes.parquet`, `frames.parquet`, visual/tex
 3. Engine lấy candidate từ visual, semantic text, OCR/ASR lexical và object/spatial evidence.
 4. Score từng nhánh được normalize trước khi weighted fusion/RRF.
 5. Reranker chỉ được trộn khi đã tải thành công; nếu không, hệ thống dùng raw fused score và renormalize trọng số còn hoạt động.
-6. KIS refine exact moment, QA gọi VLM trên evidence, TRAKE giải chuỗi theo thời gian.
+6. KIS trả ranked candidates/review data; QA frontend gửi evidence đã chọn tới VLM endpoint; TRAKE xếp candidates của từng event theo frame order. Dense `TemporalAligner` hiện chưa được gọi từ request handler.
 
 Không cộng trực tiếp cosine từ hai model có phân phối khác nhau nếu chưa normalize. Thiếu OpenCLIP hoặc reranker phải fallback, không gán điểm 0 rồi vẫn giữ nguyên trọng số.
 
@@ -132,14 +133,16 @@ uv run --project environments/siglip2 python scripts/serve_offline_query.py \
 
 Endpoint:
 
-- `GET /health`: model/index availability.
-- `POST /route`: dự đoán task.
-- `POST /query`: KIS ranked frames.
-- `POST /answer`: QA answer variants và evidence frames.
-- `POST /trake`: ordered event frames.
-- `GET /frame`, `GET /video`: media evidence.
+- `GET /api/health`: model/index availability.
+- `POST /api/query`, `POST /api/query/stream`: retrieval KIS/QA/TRAKE.
+- `POST /api/qa/answer`, `POST /api/qa/models`: QA với frame do FE chọn.
+- `GET /api/frame/{video_id}/{frame_id}`: trích frame qua manifest video path.
+- `GET /videos/{video_id}.mp4`, `GET /api/videos/{video_id}/metadata`: media.
 
-Frontend `web/index.html` được phục vụ cùng backend. Restart service sau khi đổi code hoặc index.
+Backend mới nằm trong `backend/`, frontend trong `frontend/`; FastAPI phục vụ
+frontend cùng origin. `video_id` được ánh xạ sang `video_path` từ manifest,
+đường dẫn nguồn không được gửi tới browser. Restart service sau khi đổi code
+hoặc index.
 
 ## 8. Remote VLM configuration
 
@@ -154,7 +157,9 @@ GEMINI_API_KEY=
 GEMINI_API_MODEL=gemini-2.5-flash
 ```
 
-`GEMINI_MODE=9router` là luồng mặc định. Một số tên file/stage còn chứa `gemini` để giữ tương thích artifact và scheduler cũ; điều đó không có nghĩa chúng gọi Google AI Studio. Chỉ `gemini_mode=gemini_api` mới chọn direct Gemini API.
+9Router là luồng enrichment mặc định. Một số tên file/stage còn chứa `gemini`
+để giữ tương thích artifact và scheduler cũ. QA trong frontend Flow C gửi ảnh
+và câu hỏi qua backend tới Google AI Studio hoặc 9Router theo provider.
 
 ## 9. Validation
 

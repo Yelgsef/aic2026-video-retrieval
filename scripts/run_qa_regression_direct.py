@@ -38,7 +38,7 @@ def main() -> None:
             retrieval = engine.search(
                 qa_grounding_query(question), top_k=60, rerank_k=30,
                 fusion_mode="normalized", field_aware=True,
-                openclip=engine.openclip_vectors is not None,
+                openclip=engine.openclip_available,
                 calibrate_openclip=False, reranker_fusion="rank",
                 query_transformer=False,
             )

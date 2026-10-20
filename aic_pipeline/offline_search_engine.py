@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import hashlib
 import os
 import re
 import sqlite3
@@ -17,6 +18,7 @@ import numpy as np
 import pandas as pd
 import torch
 from rapidfuzz import fuzz
+from pymilvus import MilvusClient
 from transformers import AutoModel, AutoModelForSequenceClassification, AutoProcessor, AutoTokenizer, CLIPModel
 
 from .query_understanding import build_query_plan
@@ -49,7 +51,8 @@ def intent_weights(intent: str) -> dict[str, float]:
 
 
 class OfflineSearchEngine:
-    def __init__(self, root: Path, index: Path | None = None, device: str | None = None) -> None:
+    def __init__(self, root: Path, index: Path | None = None, device: str | None = None,
+                 milvus_uri: Path | None = None, collection_prefix: str = "aic") -> None:
         self.root = root.resolve()
         self.index = (index or self.root / "workspace" / "offline_index").resolve()
         self.device = torch.device(device or ("cuda" if torch.cuda.is_available() else "cpu"))
@@ -57,31 +60,38 @@ class OfflineSearchEngine:
         self.lock = threading.Lock()
         self.scenes = pd.read_parquet(self.index / "scenes.parquet")
         self.frames = pd.read_parquet(self.index / "frames.parquet")
-        self.image_vectors = np.load(self.index / "frame_embeddings.npy", mmap_mode="r")
-        openclip_vectors = self.index / "frame_embeddings_openclip.npy"
-        self.openclip_vectors = np.load(openclip_vectors, mmap_mode="r") if openclip_vectors.exists() else None
-        if self.openclip_vectors is not None and len(self.openclip_vectors) != len(self.frames):
-            raise ValueError("OpenCLIP metadata/vector count mismatch")
+        self.milvus_uri = (milvus_uri or self.index / "milvus_lite.db").resolve()
+        if not self.milvus_uri.exists():
+            raise FileNotFoundError(
+                f"Milvus Lite index not found at {self.milvus_uri}; run scripts/build_milvus_index.py")
+        self.collection_prefix = collection_prefix.strip().lower()
+        self.milvus = MilvusClient(uri=str(self.milvus_uri))
+        available = set(self.milvus.list_collections())
+        self.milvus_collections = {
+            source: f"{self.collection_prefix}_{source}"
+            for source in ("scene_siglip", "frame_siglip", "bge_retrieval", "bge_summary",
+                           "bge_asr", "bge_ocr_entities", "frame_openclip", "gemini_text")
+            if f"{self.collection_prefix}_{source}" in available
+        }
+        required_collections = {"frame_siglip", "bge_retrieval"}
+        missing_collections = required_collections - set(self.milvus_collections)
+        if missing_collections:
+            self.milvus.close()
+            raise ValueError(f"Milvus index is missing required collections: {sorted(missing_collections)}")
+        for collection in self.milvus_collections.values():
+            self.milvus.load_collection(collection)
+        self.openclip_available = "frame_openclip" in self.milvus_collections
+        self.vector_dimensions = self._load_milvus_dimensions()
         self.openclip_processor = None
         self.openclip = None
-        self.text_vectors = np.load(self.index / "text_embeddings_bge_m3.npy", mmap_mode="r")
-        gemini_vectors = self.index / "text_embeddings_gemini.npy"
-        self.gemini_text_vectors = np.load(gemini_vectors, mmap_mode="r") if gemini_vectors.exists() else None
-        if self.gemini_text_vectors is not None and len(self.gemini_text_vectors) != len(self.scenes):
-            raise ValueError("Gemini text metadata/vector count mismatch")
+        self.gemini_text_available = "gemini_text" in self.milvus_collections
         self.gemini_text_services: GeminiTextServices | bool | None = None
         self._exact_ocr_cache: dict[str, dict[int, int]] = {}
         self.query_transformer = LocalQueryTransformer(self.root, self.index)
-        self.field_text_vectors = {}
-        for field in ("summary", "asr", "ocr_entities"):
-            path = self.index / f"text_embeddings_bge_m3_{field}.npy"
-            if path.exists():
-                values = np.load(path, mmap_mode="r")
-                if len(values) != len(self.scenes):
-                    raise ValueError(f"{field} text vector count mismatch")
-                self.field_text_vectors[field] = values
-        if len(self.frames) != len(self.image_vectors) or len(self.scenes) != len(self.text_vectors):
-            raise ValueError("Index metadata/vector count mismatch")
+        self.field_text_collections = {
+            name: name for name in self.milvus_collections
+            if name in {"bge_summary", "bge_asr", "bge_ocr_entities"}
+        }
 
         siglip = self.root / "models" / "siglip2-so400m-patch14-384"
         siglip_id = str(siglip) if siglip.exists() else "google/siglip2-so400m-patch14-384"
@@ -94,6 +104,83 @@ class OfflineSearchEngine:
         self.reranker_tokenizer = AutoTokenizer.from_pretrained(str(reranker), local_files_only=True)
         self.reranker = AutoModelForSequenceClassification.from_pretrained(
             str(reranker), dtype=self.dtype, local_files_only=True).to(self.device).eval()
+
+    def _load_milvus_dimensions(self) -> dict[str, int]:
+        report_path = self.index / "milvus_report.json"
+        if not report_path.is_file():
+            self.milvus.close()
+            raise FileNotFoundError(f"Milvus report missing at {report_path}; rebuild the Milvus index")
+        report = json.loads(report_path.read_text(encoding="utf-8"))
+        source_files = {
+            "scene_siglip": ("scene_embeddings.npy", "scenes.parquet"),
+            "frame_siglip": ("frame_embeddings.npy", "frames.parquet"),
+            "bge_retrieval": ("text_embeddings_bge_m3.npy", "scenes.parquet"),
+            "bge_summary": ("text_embeddings_bge_m3_summary.npy", "scenes.parquet"),
+            "bge_asr": ("text_embeddings_bge_m3_asr.npy", "scenes.parquet"),
+            "bge_ocr_entities": ("text_embeddings_bge_m3_ocr_entities.npy", "scenes.parquet"),
+            "frame_openclip": ("frame_embeddings_openclip.npy", "frames.parquet",
+                                "openclip_frame_keys.parquet"),
+            "gemini_text": ("text_embeddings_gemini.npy", "scenes.parquet"),
+        }
+        dimensions = {}
+        for source, collection in self.milvus_collections.items():
+            metadata = report.get("collections", {}).get(collection, {})
+            expected_rows = len(self.frames) if source.startswith("frame_") else len(self.scenes)
+            if int(metadata.get("vectors", -1)) != expected_rows:
+                self.milvus.close()
+                raise ValueError(f"Milvus collection {collection} has stale row count")
+            facts = []
+            for filename in source_files[source]:
+                path = self.index / filename
+                if not path.is_file():
+                    self.milvus.close()
+                    raise FileNotFoundError(f"Milvus source artifact missing: {path}")
+                stat = path.stat()
+                facts.append(f"{path.name}|{stat.st_size}|{stat.st_mtime_ns}")
+            fingerprint = hashlib.sha256("\n".join(facts).encode()).hexdigest()
+            if metadata.get("input_fingerprint") != fingerprint:
+                self.milvus.close()
+                raise ValueError(f"Milvus collection {collection} is stale; rebuild the Milvus index")
+            dimension = int(metadata.get("dimension", 0))
+            if dimension < 1:
+                self.milvus.close()
+                raise ValueError(f"Milvus report is missing dimensions for {collection}")
+            dimensions[source] = dimension
+        return dimensions
+
+    def _milvus_search(self, source: str, queries: np.ndarray, limit: int,
+                       output_fields: list[str] | None = None) -> list[list[dict[str, Any]]]:
+        collection = self.milvus_collections.get(source)
+        if collection is None:
+            return [[] for _ in queries]
+        entity_count = len(self.frames) if source.startswith("frame_") else len(self.scenes)
+        limit = min(max(1, limit), entity_count, 16384)
+        return self.milvus.search(
+            collection_name=collection,
+            data=np.asarray(queries, dtype=np.float32).tolist(),
+            anns_field="vector",
+            search_params={"metric_type": "COSINE", "params": {
+                "ef": min(entity_count, 32768, max(64, limit))}},
+            limit=limit,
+            output_fields=output_fields or [],
+        )
+
+    @staticmethod
+    def _sparse_scores(rows: int, hits: list[dict[str, Any]]) -> np.ndarray:
+        scores = np.full(rows, -np.inf, dtype=np.float32)
+        for hit in hits:
+            row = int(hit["id"])
+            score = float(hit["distance"])
+            if 0 <= row < rows and score > scores[row]:
+                scores[row] = score
+        return scores
+
+    @staticmethod
+    def _candidate_order(scores: np.ndarray, limit: int) -> list[int]:
+        rows = np.flatnonzero(np.isfinite(scores))
+        if not len(rows):
+            return []
+        return rows[np.argsort(-scores[rows])[:limit]].astype(int).tolist()
 
     def _fts(self, query: str, table: str, limit: int) -> list[int]:
         if table == "scene_fts":
@@ -147,25 +234,49 @@ class OfflineSearchEngine:
             combined.update(cached)
         return combined
 
-    def _siglip_scores(self, variants: list[str], pooling: str) -> tuple[np.ndarray, np.ndarray, list[list[int]]]:
-        inputs = self.siglip_processor(text=variants, padding="max_length", truncation=True, max_length=64,
-                                       return_tensors="pt").to(self.device)
-        with torch.inference_mode():
-            vectors = self.siglip.get_text_features(**inputs).float()
-            vectors = torch.nn.functional.normalize(vectors, dim=-1).cpu().numpy()
-        frame_scores = np.asarray((self.image_vectors @ vectors.T).max(axis=1), dtype=np.float32)
-        scene_rows = self.frames.scene_row.to_numpy(dtype=np.int64)
-        scores = aggregate_scene_scores(frame_scores, scene_rows, len(self.scenes), pooling)
-        best_frames = np.full(len(self.scenes), -1, dtype=np.int64)
+    def _frame_hits_to_scene_scores(self, source: str, vectors: np.ndarray, pooling: str,
+                                    candidate_k: int) -> tuple[np.ndarray, np.ndarray, list[list[int]]]:
+        scene_scores = np.full(len(self.scenes), -np.inf, dtype=np.float32)
+        best_frames = np.asarray([
+            int(values[0]) if isinstance(values, (list, tuple, np.ndarray)) and len(values) else -1
+            for values in self.scenes.representative_frame_ids
+        ], dtype=np.int64)
         best_frame_scores = np.full(len(self.scenes), -np.inf, dtype=np.float32)
         scene_candidates: list[list[tuple[float, int]]] = [[] for _ in range(len(self.scenes))]
-        for frame_row, score in enumerate(frame_scores):
-            scene_row = int(self.frames.iloc[frame_row].scene_row)
-            frame_id = int(self.frames.iloc[frame_row].frame_id)
-            scene_candidates[scene_row].append((float(score), frame_id))
+        frame_limit = min(len(self.frames), 16384, max(100, candidate_k * 8))
+        results = self._milvus_search(
+            source, vectors, frame_limit,
+            ["video_id", "scene_row", "frame_id", "pts_time"])
+        hit_scores: dict[int, float] = {}
+        hit_scenes: dict[int, int] = {}
+        hit_frames: dict[int, int] = {}
+        for hits in results:
+            for hit in hits:
+                frame_row = int(hit["id"])
+                if frame_row < 0 or frame_row >= len(self.frames):
+                    raise ValueError(f"Milvus returned invalid frame_row {frame_row}")
+                score = float(hit["distance"])
+                entity = hit.get("entity", {})
+                scene_row = int(entity.get("scene_row", self.frames.iloc[frame_row].scene_row))
+                frame_id = int(entity.get("frame_id", self.frames.iloc[frame_row].frame_id))
+                if score > hit_scores.get(frame_row, -np.inf):
+                    hit_scores[frame_row] = score
+                    hit_scenes[frame_row] = scene_row
+                    hit_frames[frame_row] = frame_id
+        frame_scores, scene_rows = [], []
+        for frame_row, score in hit_scores.items():
+            scene_row, frame_id = hit_scenes[frame_row], hit_frames[frame_row]
+            frame_scores.append(score)
+            scene_rows.append(scene_row)
+            scene_candidates[scene_row].append((score, frame_id))
             if score > best_frame_scores[scene_row]:
                 best_frames[scene_row] = frame_id
                 best_frame_scores[scene_row] = score
+        if frame_scores:
+            pooled = aggregate_scene_scores(np.asarray(frame_scores), np.asarray(scene_rows),
+                                            len(self.scenes), pooling)
+            present = np.unique(scene_rows)
+            scene_scores[present] = pooled[present]
         top_frames = []
         for candidates in scene_candidates:
             selected = []
@@ -175,21 +286,48 @@ class OfflineSearchEngine:
                 if len(selected) == 4:
                     break
             top_frames.append(selected)
-        return scores, best_frames, top_frames
+        return scene_scores, best_frames, top_frames
 
-    def _bge_scores(self, query: str) -> tuple[np.ndarray, dict[str, np.ndarray]]:
+    def _siglip_scores(self, variants: list[str], pooling: str,
+                       candidate_k: int) -> tuple[np.ndarray, np.ndarray, list[list[int]]]:
+        inputs = self.siglip_processor(text=variants, padding="max_length", truncation=True, max_length=64,
+                                       return_tensors="pt").to(self.device)
+        with torch.inference_mode():
+            vectors = self.siglip.get_text_features(**inputs).float()
+            vectors = torch.nn.functional.normalize(vectors, dim=-1).cpu().numpy()
+        if vectors.shape[1] != self.vector_dimensions["frame_siglip"]:
+            raise ValueError("SigLIP query dimension does not match the Milvus frame collection")
+        frame_scores, best_frames, top_frames = self._frame_hits_to_scene_scores(
+            "frame_siglip", vectors, pooling, candidate_k)
+        if "scene_siglip" in self.milvus_collections:
+            scene_results = self._milvus_search(
+                "scene_siglip", vectors, min(candidate_k, len(self.scenes)))
+            scene_scores = np.full(len(self.scenes), -np.inf, dtype=np.float32)
+            for hits in scene_results:
+                scene_scores = np.maximum(
+                    scene_scores, self._sparse_scores(len(self.scenes), hits))
+            frame_scores = np.maximum(frame_scores, scene_scores)
+        return frame_scores, best_frames, top_frames
+
+    def _bge_scores(self, query: str, candidate_k: int) -> tuple[np.ndarray, dict[str, np.ndarray]]:
         inputs = self.bge_tokenizer([query], padding=True, truncation=True, max_length=512,
                                     return_tensors="pt").to(self.device)
         with torch.inference_mode():
             vector = self.bge(**inputs).last_hidden_state[:, 0].float()
             vector = torch.nn.functional.normalize(vector, dim=-1).cpu().numpy()[0]
-        primary = np.asarray(self.text_vectors @ vector, dtype=np.float32)
-        fields = {name: np.asarray(values @ vector, dtype=np.float32)
-                  for name, values in self.field_text_vectors.items()}
+        if vector.shape[0] != self.vector_dimensions["bge_retrieval"]:
+            raise ValueError("BGE query dimension does not match the Milvus scene collection")
+        primary_hits = self._milvus_search("bge_retrieval", vector[None, :], candidate_k)[0]
+        primary = self._sparse_scores(len(self.scenes), primary_hits)
+        fields = {}
+        for name, source in self.field_text_collections.items():
+            hits = self._milvus_search(source, vector[None, :], candidate_k)[0]
+            fields[name.removeprefix("bge_")] = self._sparse_scores(len(self.scenes), hits)
         return primary, fields
 
-    def _openclip_scores(self, variants: list[str], pooling: str) -> np.ndarray:
-        if self.openclip_vectors is None:
+    def _openclip_scores(self, variants: list[str], pooling: str,
+                         candidate_k: int) -> np.ndarray:
+        if not self.openclip_available:
             raise FileNotFoundError("OpenCLIP frame embeddings are not available")
         if self.openclip is None:
             model_dir = self.root / "models/openclip-vit-l14-laion2b"
@@ -203,9 +341,11 @@ class OfflineSearchEngine:
         with torch.inference_mode():
             vectors = self.openclip.get_text_features(**inputs).float()
             vectors = torch.nn.functional.normalize(vectors, dim=-1).numpy()
-        frame_scores = np.asarray((self.openclip_vectors @ vectors.T).max(axis=1), dtype=np.float32)
-        return aggregate_scene_scores(frame_scores, self.frames.scene_row.to_numpy(dtype=np.int64),
-                                      len(self.scenes), pooling)
+        if vectors.shape[1] != self.vector_dimensions["frame_openclip"]:
+            raise ValueError("OpenCLIP query dimension does not match the Milvus frame collection")
+        scores, _, _ = self._frame_hits_to_scene_scores(
+            "frame_openclip", vectors, pooling, candidate_k)
+        return scores
 
     def _rerank(self, query: str, rows: list[int], batch_size: int) -> dict[int, float]:
         output: dict[int, float] = {}
@@ -225,9 +365,12 @@ class OfflineSearchEngine:
                openclip: bool = False, visual_pooling: str = "max",
                calibrate_openclip: bool = False, reranker_fusion: str = "rank",
                online_gemini_text: bool = False,
-               query_transformer: bool = True) -> dict[str, Any]:
+               query_transformer: bool = True,
+               progress_callback: Any | None = None) -> dict[str, Any]:
         if not query.strip() or top_k <= 0:
             raise ValueError("query must be non-empty and top_k positive")
+        if candidate_k <= 0:
+            raise ValueError("candidate_k must be positive")
         request_started = time.perf_counter()
         with self.lock, torch.inference_mode():
             timings = {"lock_wait": time.perf_counter() - request_started}
@@ -246,7 +389,7 @@ class OfflineSearchEngine:
             expansion = None
             text_first_scores = None
             stage_started = time.perf_counter()
-            if online_gemini_text and self.gemini_text_vectors is not None and task.task == "KIS":
+            if online_gemini_text and self.gemini_text_available and task.task == "KIS":
                 try:
                     if self.gemini_text_services is None:
                         self.gemini_text_services = GeminiTextServices(self.root, self.index)
@@ -255,20 +398,23 @@ class OfflineSearchEngine:
                         variants.extend([expansion.english_translation, *expansion.visual_queries,
                                          " ".join(expansion.keywords_en)])
                         query_vector = self.gemini_text_services.embed_query(
-                            plan.normalized, int(self.gemini_text_vectors.shape[1]))
-                        text_first_scores = np.asarray(self.gemini_text_vectors @ query_vector, dtype=np.float32)
+                            plan.normalized, self.vector_dimensions["gemini_text"])
+                        hits = self._milvus_search("gemini_text", query_vector[None, :], candidate_k)[0]
+                        text_first_scores = self._sparse_scores(len(self.scenes), hits)
                 except Exception:
                     self.gemini_text_services = False
             timings["gemini_text"] = time.perf_counter() - stage_started
             variants = list(dict.fromkeys(value.strip() for value in variants if value.strip()))
             stage_started = time.perf_counter()
-            visual, best_frames, top_frames = self._siglip_scores(variants, visual_pooling)
+            visual, best_frames, top_frames = self._siglip_scores(
+                variants, visual_pooling, candidate_k)
             timings["siglip"] = time.perf_counter() - stage_started
             stage_started = time.perf_counter()
-            semantic, semantic_fields = self._bge_scores(plan.normalized)
+            semantic, semantic_fields = self._bge_scores(plan.normalized, candidate_k)
             timings["bge"] = time.perf_counter() - stage_started
             stage_started = time.perf_counter()
-            openclip_scores = self._openclip_scores(variants, visual_pooling) if openclip else None
+            openclip_scores = (self._openclip_scores(variants, visual_pooling, candidate_k)
+                               if openclip else None)
             timings["openclip"] = time.perf_counter() - stage_started
             stage_started = time.perf_counter()
             if "object_spatial_json" in self.scenes:
@@ -296,8 +442,8 @@ class OfflineSearchEngine:
                 if reranker_fusion == "auto" else reranker_fusion
             lexical_query = plan.ocr_query if plan.intent == "ocr" and plan.ocr_query else plan.normalized
             orders = {
-                "visual": np.argsort(-visual)[:candidate_k].tolist(),
-                "semantic": np.argsort(-semantic)[:candidate_k].tolist(),
+                "visual": self._candidate_order(visual, candidate_k),
+                "semantic": self._candidate_order(semantic, candidate_k),
                 "lexical": self._fts(lexical_query, "scene_fts", candidate_k),
                 "fuzzy": self._fts(lexical_query, "fuzzy_fts", candidate_k),
             }
@@ -313,7 +459,7 @@ class OfflineSearchEngine:
                 if exact_metadata_rows:
                     orders["exact_metadata"] = exact_metadata_rows[:candidate_k]
             if openclip_scores is not None:
-                orders["openclip"] = np.argsort(-openclip_scores)[:candidate_k].tolist()
+                orders["openclip"] = self._candidate_order(openclip_scores, candidate_k)
             if object_constraints:
                 # Do not inject zero-evidence scenes into the candidate union:
                 # the detector legitimately misses some queried objects.
@@ -321,7 +467,7 @@ class OfflineSearchEngine:
                 orders["object"] = [int(row) for row in object_order
                                     if object_scores[row] > 0][:candidate_k]
             if text_first_scores is not None:
-                orders["text_first"] = np.argsort(-text_first_scores)[:candidate_k].tolist()
+                orders["text_first"] = self._candidate_order(text_first_scores, candidate_k)
             fused: dict[int, float] = {}
             for branch, order in orders.items():
                 for rank, row in enumerate(order, 1):
@@ -358,6 +504,22 @@ class OfflineSearchEngine:
             stage_started = time.perf_counter()
             has_visual_text = any(bool(str(self.scenes.iloc[row].visual_summary).strip()) for row in preliminary)
             use_reranker = bool(preliminary) and (plan.intent != "visual" or has_visual_text)
+            if progress_callback is not None:
+                preview_order = sorted(fused, key=fused.get, reverse=True)[:min(top_k, len(fused))]
+                try:
+                    progress_callback({
+                        "event": "ranked", "phase": "fusion", "final": not use_reranker,
+                        "reranker_pending": use_reranker,
+                        "items": [{
+                            "rank": rank, "fusion_score": float(fused[row_id]),
+                            "video_id": str(self.scenes.iloc[row_id].video_id),
+                            "scene_index": int(self.scenes.iloc[row_id].scene_index),
+                            "best_frame_id": int(best_frames[row_id]),
+                            "top_visual_frame_ids": top_frames[row_id],
+                        } for rank, row_id in enumerate(preview_order, 1)],
+                    })
+                except Exception:
+                    pass
             reranker_scores = self._rerank(plan.normalized, preliminary, rerank_batch_size) if use_reranker else {}
             timings["reranker"] = time.perf_counter() - stage_started
             stage_started = time.perf_counter()
@@ -400,17 +562,20 @@ class OfflineSearchEngine:
             results = []
             for rank, row_id in enumerate(ranked, 1):
                 row = self.scenes.iloc[row_id]
-                results.append({"rank": rank, "fusion_score": fused[row_id], "visual_score": float(visual[row_id]),
-                                "semantic_score": float(semantic[row_id]), "rapidfuzz_score": float(rapid[row_id]),
+                results.append({"rank": rank, "fusion_score": fused[row_id],
+                                "visual_score": (float(visual[row_id]) if np.isfinite(visual[row_id]) else None),
+                                "semantic_score": (float(semantic[row_id]) if np.isfinite(semantic[row_id]) else None),
+                                "rapidfuzz_score": float(rapid[row_id]),
                                 "openclip_score": (float(openclip_scores[row_id])
-                                                   if openclip_scores is not None else None),
+                                                   if openclip_scores is not None and np.isfinite(openclip_scores[row_id]) else None),
                                 "object_spatial_score": (float(object_scores[row_id])
                                                          if object_constraints else None),
                                 "profile_score": profile_scores.get(row_id),
                                 "text_first_score": (float(text_first_scores[row_id])
                                                      if text_first_scores is not None else None),
                                 "semantic_field_scores": {name: float(values[row_id])
-                                                          for name, values in semantic_fields.items()},
+                                                          for name, values in semantic_fields.items()
+                                                          if np.isfinite(values[row_id])},
                                 "field_coverage_score": coverage_scores.get(row_id),
                                 "field_coverage": coverage_fields.get(row_id, {}),
                                 "reranker_score": reranker_scores.get(row_id), "video_id": str(row.video_id),
@@ -450,10 +615,16 @@ class OfflineSearchEngine:
 
     def health(self) -> dict[str, Any]:
         return {"status": "ok", "device": str(self.device), "scenes": len(self.scenes),
-                "frames": len(self.frames), "image_dimension": int(self.image_vectors.shape[1]),
-                "text_dimension": int(self.text_vectors.shape[1]),
-                "semantic_fields": sorted(self.field_text_vectors),
-                "gemini_text_available": self.gemini_text_vectors is not None,
-                "openclip_available": self.openclip_vectors is not None,
+                "frames": len(self.frames), "milvus_uri": str(self.milvus_uri),
+                "milvus_collections": sorted(self.milvus_collections),
+                "image_dimension": self.vector_dimensions.get("frame_siglip", 0),
+                "text_dimension": self.vector_dimensions.get("bge_retrieval", 0),
+                "semantic_fields": sorted(name.removeprefix("bge_")
+                                           for name in self.field_text_collections),
+                "gemini_text_available": self.gemini_text_available,
+                "openclip_available": self.openclip_available,
                 "query_transformer_available": self.query_transformer.available,
                 "cuda_memory_allocated": int(torch.cuda.memory_allocated()) if self.device.type == "cuda" else 0}
+
+    def close(self) -> None:
+        self.milvus.close()

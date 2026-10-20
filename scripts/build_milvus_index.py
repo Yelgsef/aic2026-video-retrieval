@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 from dataclasses import dataclass
 from pathlib import Path
@@ -29,6 +30,7 @@ SOURCES = (
     VectorSource("bge_summary", "text_embeddings_bge_m3_summary.npy", "scenes.parquet", "row_id", "scene"),
     VectorSource("bge_asr", "text_embeddings_bge_m3_asr.npy", "scenes.parquet", "row_id", "scene"),
     VectorSource("bge_ocr_entities", "text_embeddings_bge_m3_ocr_entities.npy", "scenes.parquet", "row_id", "scene"),
+    VectorSource("gemini_text", "text_embeddings_gemini.npy", "scenes.parquet", "row_id", "scene"),
     VectorSource("frame_siglip", "frame_embeddings.npy", "frames.parquet", "frame_row", "frame"),
     VectorSource("frame_openclip", "frame_embeddings_openclip.npy", "frames.parquet", "frame_row", "frame"),
 )
@@ -119,6 +121,17 @@ def ensure_finite(vectors: np.ndarray, batch_size: int, name: str) -> None:
     for start in range(0, len(vectors), batch_size):
         if not np.isfinite(vectors[start:start + batch_size]).all():
             raise ValueError(f"{name}: vectors contain NaN or infinity")
+
+
+def input_fingerprint(index: Path, source: VectorSource) -> str:
+    paths = [index / source.filename, index / source.metadata_filename]
+    if source.name == "frame_openclip":
+        paths.append(index / "openclip_frame_keys.parquet")
+    facts = []
+    for path in paths:
+        stat = path.stat()
+        facts.append(f"{path.name}|{stat.st_size}|{stat.st_mtime_ns}")
+    return hashlib.sha256("\n".join(facts).encode()).hexdigest()
 
 
 def verify_collection(client: MilvusClient, collection_name: str, source: VectorSource,
@@ -241,6 +254,7 @@ def main() -> None:
             report["collections"][collection_name] = {
                 "vectors": inserted, "dimension": dimension,
                 "source": source.filename, "metadata": source.metadata_filename,
+                "input_fingerprint": input_fingerprint(index, source),
                 "verification": verification,
             }
             print(json.dumps({"collection": collection_name, **report["collections"][collection_name]}),

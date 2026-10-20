@@ -1,0 +1,314 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <link rel="icon" href="/favicon.ico" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <meta name="theme-color" content="#fff1e9" />
+    <meta name="description" content="A local query workspace for KIS, TRAKE, and QA." />
+    <title>Query Workbench</title>
+    <link rel="stylesheet" href="/style.css?v=20260828-ranking-controls" />
+  </head>
+  <body>
+    <header class="site-header">
+      <div class="site-header__inner">
+        <div class="brand">
+          <div class="brand__mark" aria-hidden="true">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8">
+              <circle cx="11" cy="11" r="6.5" />
+              <path d="m16 16 4 4M8.5 11h5M11 8.5v5" />
+            </svg>
+          </div>
+          <p class="brand__name">Query Workbench</p>
+        </div>
+
+        <nav class="tabs no-scrollbar" aria-label="Main navigation">
+          <button type="button" class="tabs__btn" data-tab="KIS" aria-current="page">KIS</button>
+          <button type="button" class="tabs__btn" data-tab="TRAKE">TRAKE</button>
+          <button type="button" class="tabs__btn" data-tab="QA">QA</button>
+          <button type="button" class="tabs__btn" data-tab="CHECK">Check</button>
+          <button type="button" class="tabs__btn" data-tab="Settings">Settings</button>
+        </nav>
+      </div>
+    </header>
+
+    <main class="page">
+      <!-- KIS panel: grid of preview thumbnails, click opens detail modal -->
+      <section id="panel-KIS" class="panel panel--wide" data-panel="KIS">
+        <h1 class="panel__title">KIS</h1>
+        <form class="search-form" id="form-KIS" novalidate>
+          <label class="search-form__field">
+            <span class="sr-only">Search query</span>
+            <svg class="search-form__icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" aria-hidden="true">
+              <circle cx="11" cy="11" r="6.5" />
+              <path d="m16 16 4 4" />
+            </svg>
+            <input type="search" class="search-form__input" placeholder="Search in KIS..." required />
+          </label>
+          <label class="search-form__server">
+            <span class="sr-only">Server</span>
+            <select class="search-form__select"></select>
+          </label>
+          <button type="submit" class="search-form__submit" data-query-mode="qwen">
+            <span class="search-form__submit-label">Search with Qwen</span>
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true">
+              <path d="M5 12h14m-5-5 5 5-5 5" />
+            </svg>
+          </button>
+          <button type="submit" class="search-form__submit search-form__submit--plain" data-query-mode="plain">
+            <span class="search-form__submit-label">Pure search</span>
+          </button>
+        </form>
+        <label class="kis-ranking-options__toggle">
+          <input id="kis-reranker-enabled" type="checkbox" checked />
+          <span>Enable reranker</span>
+        </label>
+        <div class="error-box" hidden></div>
+        <p class="grid-meta" hidden></p>
+        <div class="result-grid" hidden></div>
+      </section>
+
+      <section id="panel-TRAKE" class="panel" data-panel="TRAKE" hidden>
+        <h1 class="panel__title">TRAKE</h1>
+        <form class="search-form" id="form-TRAKE" novalidate>
+          <label class="search-form__field">
+            <span class="sr-only">Search query</span>
+            <svg class="search-form__icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" aria-hidden="true">
+              <circle cx="11" cy="11" r="6.5" />
+              <path d="m16 16 4 4" />
+            </svg>
+            <input type="search" class="search-form__input" placeholder="Search in TRAKE..." required />
+          </label>
+          <label class="search-form__server">
+            <span class="sr-only">Server</span>
+            <select class="search-form__select"></select>
+          </label>
+          <button type="submit" class="search-form__submit" data-query-mode="qwen">
+            <span class="search-form__submit-label">Search with Qwen</span>
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true">
+              <path d="M5 12h14m-5-5 5 5-5 5" />
+            </svg>
+          </button>
+          <button type="submit" class="search-form__submit search-form__submit--plain" data-query-mode="plain">
+            <span class="search-form__submit-label">Pure search</span>
+          </button>
+        </form>
+        <div class="error-box" hidden></div>
+        <div class="results trake-results" hidden></div>
+      </section>
+
+      <!-- QA panel -->
+      <section id="panel-QA" class="panel" data-panel="QA" hidden>
+        <h1 class="panel__title">QA</h1>
+        <form class="search-form" id="form-QA" novalidate>
+          <label class="search-form__field">
+            <span class="sr-only">Search query</span>
+            <svg class="search-form__icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" aria-hidden="true">
+              <circle cx="11" cy="11" r="6.5" />
+              <path d="m16 16 4 4" />
+            </svg>
+            <input type="search" class="search-form__input" placeholder="Ask a question about the video collection..." required />
+          </label>
+          <label class="search-form__server">
+            <span class="sr-only">Server</span>
+            <select class="search-form__select"></select>
+          </label>
+          <button type="submit" class="search-form__submit" data-query-mode="qwen">
+            <span class="search-form__submit-label">Search with Qwen</span>
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true">
+              <path d="M5 12h14m-5-5 5 5-5 5" />
+            </svg>
+          </button>
+          <button type="submit" class="search-form__submit search-form__submit--plain" data-query-mode="plain">
+            <span class="search-form__submit-label">Pure search</span>
+          </button>
+        </form>
+        <div class="error-box" hidden></div>
+        <p class="grid-meta" hidden></p>
+        <div class="result-grid" hidden></div>
+
+        <div class="qa-ask" id="qa-ask" hidden>
+          <div class="qa-ask__row">
+            <div class="qa-ask__info">
+              <p id="qa-ask__count"></p>
+              <p id="qa-ask__llm-warning" class="qa-ask__warning" hidden>
+                LLM is not configured yet — select AI Studio and add its API key and model in Settings.
+              </p>
+            </div>
+            <button type="button" class="btn-primary" id="qa-ask__button">Ask LLM about these frames</button>
+          </div>
+          <div class="qa-ask__error" id="qa-ask__error" hidden></div>
+          <div class="qa-ask__answer" id="qa-ask__answer" hidden></div>
+        </div>
+      </section>
+
+      <section id="panel-CHECK" class="panel panel--narrow" data-panel="CHECK" hidden>
+        <div class="panel__head">
+          <h1 class="panel__title">Check</h1>
+          <p class="panel__subtitle">Open a known video at an exact frame. Paste either separate values or a coordinate such as L26_V035,5100.</p>
+        </div>
+
+        <form id="video-frame-check-form" class="video-check" novalidate>
+          <div class="video-check__fields">
+            <label class="video-check__field" for="check-video-id">
+              <span>Video ID or video,frame</span>
+              <input id="check-video-id" class="text-input text-input--mono" type="text" required autocomplete="off" placeholder="L26_V035,5100" />
+            </label>
+            <label class="video-check__field" for="check-frame-id">
+              <span>Frame ID</span>
+              <input id="check-frame-id" class="text-input text-input--mono" type="number" min="0" step="1" inputmode="numeric" placeholder="Optional when pasted above" />
+            </label>
+          </div>
+          <label class="video-check__field" for="check-server">
+            <span>Backend server</span>
+            <select id="check-server" class="text-input"></select>
+          </label>
+          <button id="check-submit" class="btn-primary video-check__submit" type="submit">Open frame</button>
+          <p id="check-status" class="video-check__status" role="status" aria-live="polite" hidden></p>
+        </form>
+      </section>
+
+      <!-- Settings panel -->
+      <section id="panel-Settings" class="panel panel--narrow" data-panel="Settings" hidden>
+        <div class="panel__head">
+          <h1 class="panel__title">Settings</h1>
+          <p class="panel__subtitle">Backend servers and LLM configuration, stored in this browser only.</p>
+        </div>
+
+        <div class="card">
+          <div class="card__head">
+            <h2 class="card__title">Servers</h2>
+            <span class="badge" id="servers-count">00</span>
+          </div>
+
+          <form class="server-form" id="server-form" novalidate>
+            <label for="server-url" class="field-label">Backend URL</label>
+            <div class="server-form__row">
+              <input id="server-url" type="url" inputmode="url" class="text-input" placeholder="http://localhost:3000" />
+              <button type="submit" class="btn-primary">Add server</button>
+            </div>
+            <p class="field-error" id="server-error"></p>
+          </form>
+
+          <div class="server-list" id="server-list"></div>
+          <div class="empty-state" id="server-empty">
+            <div class="empty-state__icon" aria-hidden="true">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8">
+                <rect x="4" y="5" width="16" height="6" rx="2" /><rect x="4" y="13" width="16" height="6" rx="2" /><path d="M8 8h.01M8 16h.01" />
+              </svg>
+            </div>
+            <p class="empty-state__title">No servers yet</p>
+          </div>
+        </div>
+
+        <div class="card">
+          <div class="card__head">
+            <h2 class="card__title">QA — Vision LLM</h2>
+            <button type="button" class="link-btn" id="llm-reset">Reset to defaults</button>
+          </div>
+          <p class="card__desc">
+            Choose how QA calls the vision LLM. API keys are stored only in this browser's localStorage.
+          </p>
+
+          <div class="llm-provider-options" role="group" aria-label="LLM call method">
+            <label class="llm-provider-option">
+              <input id="llm-provider-ai-studio" type="checkbox" name="llm-provider" value="ai_studio" />
+              <span><strong>Google AI Studio</strong><small>Python backend gọi trực tiếp — đang hoạt động</small></span>
+            </label>
+            <label class="llm-provider-option">
+              <input id="llm-provider-9router" type="checkbox" name="llm-provider" value="9router" />
+              <span><strong>9Router</strong><small>Chưa triển khai</small></span>
+            </label>
+          </div>
+
+          <div class="field-group">
+            <label for="llm-ai-studio-api-key" class="field-label">AI Studio API key</label>
+            <div class="server-form__row">
+              <input id="llm-ai-studio-api-key" type="text" autocomplete="off" class="text-input text-input--mono" placeholder="AIza..." />
+              <button type="button" class="btn-primary btn-primary--compact" id="llm-ai-studio-api-key-save">Save</button>
+            </div>
+            <p class="field-help" id="llm-ai-studio-api-key-status"></p>
+          </div>
+
+          <div class="field-group">
+            <label for="llm-9router-api-key" class="field-label">9Router API key</label>
+            <div class="server-form__row">
+              <input id="llm-9router-api-key" type="text" autocomplete="off" class="text-input text-input--mono" placeholder="9Router key" />
+              <button type="button" class="btn-primary btn-primary--compact" id="llm-9router-api-key-save">Save</button>
+            </div>
+            <p class="field-help" id="llm-9router-api-key-status"></p>
+          </div>
+
+          <div class="field-group-2col">
+            <div class="field-group">
+              <label for="llm-model" class="field-label">Model</label>
+              <div class="server-form__row">
+                <select id="llm-model" class="text-input" aria-describedby="llm-model-status"></select>
+                <button type="button" class="btn-secondary" id="llm-model-refresh">Load models</button>
+              </div>
+              <p class="field-help" id="llm-model-status">Enter an AI Studio API key, then load available models.</p>
+            </div>
+            <div class="field-group">
+              <label for="llm-max-images" class="field-label">Max images per question</label>
+              <input id="llm-max-images" type="number" min="1" max="16" class="text-input" />
+            </div>
+          </div>
+
+          <div class="field-group">
+            <label for="llm-system-prompt" class="field-label">System prompt</label>
+            <textarea id="llm-system-prompt" rows="5" class="text-input textarea"></textarea>
+          </div>
+        </div>
+      </section>
+    </main>
+
+    <!-- KIS result detail modal: video + info panel -->
+    <div id="detail-modal" class="modal-overlay" hidden>
+      <div class="modal" role="dialog" aria-modal="true" aria-labelledby="modal-video-id">
+        <button type="button" class="modal__close" id="modal-close" aria-label="Close">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" aria-hidden="true">
+            <path d="m6 6 12 12M18 6 6 18" />
+          </svg>
+        </button>
+
+        <div class="modal__info">
+          <p class="modal__rank" id="modal-rank"></p>
+          <h2 class="modal__video-id" id="modal-video-id"></h2>
+          <dl class="modal__facts" id="modal-facts"></dl>
+          <div class="modal__context">
+            <h3 class="modal__context-title">Scene context</h3>
+            <p id="modal-context"></p>
+          </div>
+          <div class="modal__context" id="modal-ocr-block" hidden>
+            <h3 class="modal__context-title">OCR</h3>
+            <p id="modal-ocr"></p>
+          </div>
+          <div class="modal__context" id="modal-asr-block" hidden>
+            <h3 class="modal__context-title">ASR</h3>
+            <p id="modal-asr"></p>
+          </div>
+          <div class="modal__context modal__answer" id="modal-answer-block" hidden>
+            <h3 class="modal__context-title">LLM answer</h3>
+            <p id="modal-answer"></p>
+          </div>
+        </div>
+
+        <div class="modal__video">
+          <video id="modal-video-el" controls playsinline></video>
+          <div class="frame-seek">
+            <span class="frame-seek__current">Current frame: <strong id="modal-current-frame">—</strong></span>
+            <span class="frame-seek__fps" id="modal-fps">FPS: —</span>
+            <label for="modal-frame-input" class="sr-only">Frame ID</label>
+            <input id="modal-frame-input" type="number" min="0" step="1" inputmode="numeric" placeholder="Frame ID" />
+            <button id="modal-frame-load" type="button">Load frame</button>
+            <button id="modal-frame-download" class="frame-seek__frame-download" type="button" hidden>Download frame.jpg</button>
+            <button id="modal-submission-download" class="frame-seek__download" type="button" hidden>Download ans.csv</button>
+            <span class="frame-seek__status" id="modal-frame-status" role="status"></span>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <script type="module" src="/js/app.js?v=20260907-combined-check"></script>
+  </body>
+</html>
