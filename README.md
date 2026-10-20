@@ -115,7 +115,7 @@ prompt chỉ cần xóa cache; không cần embed lại.
 Tạo .env và không commit:
 
 ~~~env
-NINEROUTER_CHAT_URL=https://router.studev.net/v1/chat/completions
+NINEROUTER_CHAT_URL=http://localhost:20128/v1/chat/completions
 NINEROUTER_MODEL=ag/gemini-3-flash-agent
 NINEROUTER_KEY=<key-neu-router-yeu-cau>
 GEMINI_MODE=9router
@@ -125,7 +125,7 @@ GEMINI_API_MODEL=gemini-2.5-flash
 
 ~~~bash
 set -a; source .env; set +a
-curl -sS -H "Authorization: Bearer $NINEROUTER_KEY" "https://router.studev.net/v1/models"
+curl -sS "http://localhost:20128/v1/models"
 ~~~
 
 9Router dùng cho Gemini enrichment và QA online; BGE-M3, SigLIP2, OpenCLIP

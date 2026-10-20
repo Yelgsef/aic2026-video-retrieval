@@ -146,7 +146,7 @@ Frontend `web/index.html` được phục vụ cùng backend. Restart service sa
 `.env` tối thiểu:
 
 ```env
-NINEROUTER_CHAT_URL=https://router.studev.net/v1/chat/completions
+NINEROUTER_CHAT_URL=http://localhost:20128/v1/chat/completions
 NINEROUTER_MODEL=ag/gemini-3-flash-agent
 NINEROUTER_KEY=
 GEMINI_MODE=9router

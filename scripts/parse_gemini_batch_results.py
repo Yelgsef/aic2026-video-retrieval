@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import re
 from pathlib import Path
 from typing import Any
 
@@ -23,7 +24,7 @@ def response_text(payload: dict[str, Any]) -> str:
     return text.removeprefix("```json").removesuffix("```").strip()
 
 
-def normalize(value: dict[str, Any]) -> dict[str, Any]:
+def normalize(value: dict[str, Any], frame_ids: list[int]) -> dict[str, Any]:
     aliases = {"location": "locations", "event": "events"}
     for old, new in aliases.items():
         if old in value and new not in value:
@@ -34,6 +35,18 @@ def normalize(value: dict[str, Any]) -> dict[str, Any]:
     for field in FIELDS[1:]:
         if not isinstance(output[field], list):
             raise ValueError(f"{field} must be a list")
+    mapped_lines = []
+    for line in output["ocr_lines"]:
+        if not isinstance(line, dict) or not isinstance(line.get("text"), str):
+            raise ValueError("each OCR line must contain text and frame_label")
+        label = str(line.get("frame_label", ""))
+        match = re.fullmatch(r"F(\d+)", label, flags=re.IGNORECASE)
+        position = int(match.group(1)) - 1 if match else -1
+        valid = 0 <= position < len(frame_ids)
+        mapped_lines.append({**line, "frame_label": label,
+                             "frame_id": int(frame_ids[position]) if valid else None,
+                             "frame_mapping_valid": valid})
+    output["ocr_lines"] = mapped_lines
     return output
 
 
@@ -51,10 +64,13 @@ def main() -> None:
             continue
         try:
             envelope = json.loads(line)
+            if envelope.get("fallback") or envelope.get("error"):
+                raise ValueError("response is a fallback/error, not a VLM result")
             key = str(envelope.get("key") or "")
             if not key or key in seen:
                 raise ValueError("missing or duplicate key")
-            description = normalize(json.loads(response_text(envelope)))
+            frame_ids = [int(value) for value in envelope.get("frame_ids", [])]
+            description = normalize(json.loads(response_text(envelope)), frame_ids)
             parsed.append({"scene_id": key, "video_id": args.video_id, "description": description,
                            "provenance": {"source": "9router_chat", "input": str(source), "line": line_number}})
             seen.add(key)

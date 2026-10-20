@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import argparse
 import json
-import re
 import sqlite3
 import unicodedata
 from pathlib import Path
@@ -68,11 +67,9 @@ def main() -> None:
                 for line in raw_document.get("ocr_lines", []):
                     if not isinstance(line, dict):
                         continue
-                    match = re.fullmatch(r"F(\d+)", str(line.get("frame_label", "")), flags=re.IGNORECASE)
-                    position = int(match.group(1)) - 1 if match else -1
-                    if 0 <= position < len(representative_frame_ids):
+                    if line.get("frame_mapping_valid") and line.get("frame_id") is not None:
                         ocr_evidence.append({"text": str(line.get("text", "")),
-                                             "frame_id": representative_frame_ids[position]})
+                                             "frame_id": int(line["frame_id"])})
                 mask = (metadata.frame_id >= int(scene.start_frame)) & (metadata.frame_id < int(scene.end_frame_exclusive))
                 positions = np.flatnonzero(mask.to_numpy())
                 if not len(positions):

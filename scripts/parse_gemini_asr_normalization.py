@@ -30,7 +30,7 @@ def main() -> None:
             value = json.loads(response_text(envelope))
             if not isinstance(value.get("normalized_text"), str):
                 raise ValueError("missing normalized_text")
-            corrections[key] = value
+            corrections[key] = value["normalized_text"]
         except (KeyError, ValueError, json.JSONDecodeError) as exc:
             errors.append({"line": number, "error": str(exc)})
     source = json.loads((ROOT / "workspace/asr/faster_whisper_large_v3" /
@@ -39,17 +39,11 @@ def main() -> None:
     for segment in source["segments"]:
         key = f"{args.video_id}:segment:{int(segment['segment_id'])}"
         correction = corrections.get(key)
-        normalized.append({"segment_id": int(segment["segment_id"]), "start": segment["start"],
-                           "end": segment["end"], "raw_text": segment["text"],
-                           "normalized_text": correction["normalized_text"] if correction else segment["text"],
-                           "gemini_corrected": correction is not None,
-                           "proper_nouns": correction.get("proper_nouns", []) if correction else [],
-                           "changes": correction.get("changes", []) if correction else [],
-                           "uncertainties": correction.get("uncertainties", []) if correction else []})
+        normalized.append({"start": segment["start"], "end": segment["end"],
+                           "normalized_text": correction if correction is not None else segment["text"]})
     output = root / "normalized.json"
-    output.write_text(json.dumps({"schema_version": "0.2.0", "video_id": args.video_id,
-        "segments": normalized,
-        "errors": errors}, ensure_ascii=False, indent=2), encoding="utf-8")
+    output.write_text(json.dumps({"schema_version": "0.3.0", "video_id": args.video_id,
+        "segments": normalized, "errors": errors}, ensure_ascii=False, indent=2), encoding="utf-8")
     print(json.dumps({"video_id": args.video_id, "corrected": len(corrections),
                       "errors": len(errors), "output": str(output)}, ensure_ascii=False, indent=2))
 

@@ -36,7 +36,7 @@ def main() -> None:
     parser.add_argument("--prompt", default="Reply with exactly: ROUTER_OK")
     parser.add_argument("--image", type=Path, help="Optional local JPG/PNG/WebP image")
     parser.add_argument("--url", default=os.getenv(
-        "NINEROUTER_CHAT_URL", "https://router.studev.net/v1/chat/completions"))
+        "NINEROUTER_CHAT_URL", "http://localhost:20128/v1/chat/completions"))
     parser.add_argument("--model", default=os.getenv(
         "NINEROUTER_MODEL", "ag/gemini-3-flash"))
     parser.add_argument("--max-tokens", type=int, default=2048)

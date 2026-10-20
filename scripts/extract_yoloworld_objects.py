@@ -32,12 +32,11 @@ def main() -> None:
     parser = argparse.ArgumentParser(description="YOLO-World detection on final AIC keyframes.")
     parser.add_argument("--video-id", required=True)
     parser.add_argument("--checkpoint", type=Path, default=ROOT / "models/yolo-world/yolov8s-worldv2.pt")
-    parser.add_argument("--confidence", type=float, default=0.12)
+    parser.add_argument("--confidence", type=float, default=0.20)
     parser.add_argument("--iou", type=float, default=0.5)
     parser.add_argument("--batch-size", type=int, default=8)
     parser.add_argument("--max-detections", type=int, default=50)
     parser.add_argument("--classes", nargs="+", default=DEFAULT_CLASSES)
-    parser.add_argument("--save-crops", action="store_true")
     parser.add_argument("--force", action="store_true")
     args = parser.parse_args()
     if not args.checkpoint.exists():
@@ -61,7 +60,6 @@ def main() -> None:
     model.set_classes(args.classes)
     capture = cv2.VideoCapture(video_path)
     rows, decoded, started = [], 0, time.perf_counter()
-    crop_dir = output_dir / "crops"
     for start in range(0, len(frames_meta), args.batch_size):
         batch_meta = frames_meta.iloc[start:start + args.batch_size]
         images, valid_meta = [], []
@@ -79,40 +77,25 @@ def main() -> None:
         for image, frame, result in zip(images, valid_meta, results):
             height, width = image.shape[:2]
             boxes = result.boxes
-            for detection_index in range(len(boxes)):
-                box = boxes.xyxy[detection_index].detach().cpu().tolist()
-                confidence = float(boxes.conf[detection_index].detach().cpu())
-                class_id = int(boxes.cls[detection_index].detach().cpu())
+            for box_tensor, confidence_tensor, class_tensor in zip(boxes.xyxy, boxes.conf, boxes.cls):
+                box = box_tensor.detach().cpu().tolist()
+                confidence = float(confidence_tensor.detach().cpu())
+                class_id = int(class_tensor.detach().cpu())
                 label = str(result.names[class_id])
                 x1, y1, x2, y2 = box
-                crop_path = None
-                if args.save_crops:
-                    left, top = max(0, int(x1)), max(0, int(y1))
-                    right, bottom = min(width, int(x2 + 0.999)), min(height, int(y2 + 0.999))
-                    if right > left and bottom > top:
-                        crop_dir.mkdir(parents=True, exist_ok=True)
-                        crop_path = crop_dir / f"f{int(frame.frame_id):08d}_d{detection_index:03d}.jpg"
-                        cv2.imwrite(str(crop_path), image[top:bottom, left:right],
-                                    [cv2.IMWRITE_JPEG_QUALITY, 90])
                 rows.append({"video_id": args.video_id, "frame_id": int(frame.frame_id),
-                             "pts_time": float(frame.pts_time), "scene_index": frame_to_scene[int(frame.frame_id)],
-                             "shot_id": int(frame.shot_id), "detection_index": detection_index,
+                             "scene_index": frame_to_scene[int(frame.frame_id)],
                              "label": label, "confidence": confidence,
-                             "x1": float(x1), "y1": float(y1), "x2": float(x2), "y2": float(y2),
                              "x1_norm": float(x1 / width), "y1_norm": float(y1 / height),
-                             "x2_norm": float(x2 / width), "y2_norm": float(y2 / height),
-                             "frame_width": width, "frame_height": height,
-                             "crop_path": str(crop_path) if crop_path else None})
+                             "x2_norm": float(x2 / width), "y2_norm": float(y2 / height)})
     capture.release()
     output_dir.mkdir(parents=True, exist_ok=True)
     table = pd.DataFrame(rows)
     if table.empty:
-        table = pd.DataFrame(columns=["video_id", "frame_id", "pts_time", "scene_index", "shot_id",
-                                            "detection_index", "label", "confidence", "x1", "y1", "x2", "y2",
-                                            "x1_norm", "y1_norm", "x2_norm", "y2_norm", "frame_width", "frame_height",
-                                            "crop_path"])
+        table = pd.DataFrame(columns=["video_id", "frame_id", "scene_index", "label", "confidence",
+                                      "x1_norm", "y1_norm", "x2_norm", "y2_norm"])
     table.to_parquet(destination, index=False)
-    report = {"schema_version": "0.1.0", "video_id": args.video_id,
+    report = {"schema_version": "0.2.0", "video_id": args.video_id,
               "model": str(args.checkpoint), "classes": args.classes,
               "final_frames": len(frames_meta), "decoded_frames": decoded,
               "detections": len(table), "frames_with_detections": int(table.frame_id.nunique()) if len(table) else 0,

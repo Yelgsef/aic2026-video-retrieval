@@ -29,7 +29,7 @@ class RouterChatClient:
     def __init__(self, root: Path, timeout_seconds: float = 30.0) -> None:
         load_dotenv(root.resolve() / ".env")
         self.url = os.getenv(
-            "NINEROUTER_CHAT_URL", "https://router.studev.net/v1/chat/completions"
+            "NINEROUTER_CHAT_URL", "http://localhost:20128/v1/chat/completions"
         ).strip()
         self.key = os.getenv("NINEROUTER_KEY", "").strip()
         self.model = os.getenv("NINEROUTER_MODEL", "gc/gemini-2.5-flash").strip()

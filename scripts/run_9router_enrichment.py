@@ -49,9 +49,6 @@ class SceneResult(BaseModel):
 
 class AsrResult(BaseModel):
     normalized_text: str
-    proper_nouns: list[str]
-    changes: list[str]
-    uncertainties: list[str]
 
 
 class OcrResult(BaseModel):
@@ -108,7 +105,8 @@ def main() -> None:
             if line.strip():
                 item = json.loads(line)
                 provider = item.get("provider") or (item.get("response") or {}).get("provider")
-                if item.get("key") and not item.get("error") and provider == "9router":
+                if (item.get("key") and not item.get("error") and not item.get("fallback")
+                        and provider == "9router"):
                     done[str(item["key"])] = item
     client = RouterChatClient(ROOT, timeout_seconds=180)
     gate = threading.Lock()
@@ -128,7 +126,10 @@ def main() -> None:
                 token_limit = 4096 if args.task == "scenes" else 2048
                 response = client.json_response(prompt, schema, image, model=args.model,
                                                 temperature=0.1, max_tokens=token_limit)
-                return legacy_envelope(str(row["key"]), response.text, response.usage)
+                result = legacy_envelope(str(row["key"]), response.text, response.usage)
+                if "frame_ids" in row.get("request", {}):
+                    result["frame_ids"] = row["request"]["frame_ids"]
+                return result
             except Exception as exc:
                 error = str(exc)
                 if is_quota_error(error):
@@ -140,8 +141,7 @@ def main() -> None:
         if args.task == "asr-normalize":
             marker = "Đoạn cần sửa:"
             raw = prompt.split(marker, 1)[1].split("\n", 1)[0].strip() if marker in prompt else ""
-            value = AsrResult(normalized_text=raw, proper_nouns=[], changes=[],
-                              uncertainties=["9Router output invalid; kept raw ASR"])
+            value = AsrResult(normalized_text=raw)
         elif args.task == "ocr-crops":
             value = OcrResult(text="", readable=False, language="unknown",
                               uncertainty="9Router output invalid; local OCR retained")
@@ -151,6 +151,7 @@ def main() -> None:
                                 uncertainties=["9Router output invalid; local evidence retained"])
         fallback = legacy_envelope(str(row["key"]), value.model_dump_json(), None)
         fallback["fallback"] = error
+        fallback["error"] = error
         return fallback
 
     pending = [row for row in rows if str(row["key"]) not in done]
@@ -168,7 +169,7 @@ def main() -> None:
     except QuotaExhausted as exc:
         print(f"9ROUTER_QUOTA_PAUSE {exc}", file=sys.stderr, flush=True)
         raise SystemExit(75)
-    failed = sum(bool(item.get("error")) for item in completed.values())
+    failed = sum(bool(item.get("error") or item.get("fallback")) for item in completed.values())
     print(json.dumps({"task": args.task, "video_id": args.video_id, "requests": len(rows),
                       "completed": len(completed) - failed, "failed": failed,
                       "output": str(output)}, ensure_ascii=False, indent=2))

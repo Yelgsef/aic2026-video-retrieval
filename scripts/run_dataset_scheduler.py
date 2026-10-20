@@ -27,7 +27,7 @@ DEPENDENCY = {
     "siglip-so400m-final": "siglip-base",
     "asr-large-v3": None,
     "semantic-scenes": ("siglip-base", "asr-large-v3"),
-    "objects-yoloworld": "semantic-scenes",
+    "objects-yoloworld": ("semantic-scenes", "siglip-so400m-final"),
     "fullres-ocr": "siglip-so400m-final",
     "asr-normalize-prepare": "asr-large-v3",
     "gemini-batch-prepare": "semantic-scenes",
@@ -57,12 +57,13 @@ def configuration_hash() -> str:
         "semantic_scene_version": "0.2.0",
         "gemini_batch_schema_version": "0.1.0",
         "object_model": "yolov8s-worldv2",
-        "object_confidence": 0.12,
+        "object_schema_version": "0.2.0",
+        "object_confidence": 0.20,
         "ocr_model": "PP-OCRv6-small-vi",
         "ocr_confidence": 0.35,
         "ocr_gemini_threshold": 0.78,
         "ocr_batch_size": 16,
-        "asr_normalization": "conditional-gemini-minimal",
+        "asr_normalization": "conditional-gemini-minimal-v0.3.0",
     }
     return hashlib.sha256(json.dumps(payload, sort_keys=True).encode()).hexdigest()[:16]
 
@@ -187,7 +188,11 @@ def artifact_valid(video_id: str, stage: str) -> bool:
         if stage == "objects-yoloworld":
             table = pd.read_parquet(ROOT / "workspace" / "objects_yoloworld" / video_id / "detections.parquet")
             report = json.loads((ROOT / "workspace" / "objects_yoloworld" / video_id / "report.json").read_text(encoding="utf-8"))
-            return report.get("decoded_frames", 0) == report.get("final_frames", -1) and "frame_id" in table.columns
+            expected_columns = {"video_id", "frame_id", "scene_index", "label", "confidence",
+                                "x1_norm", "y1_norm", "x2_norm", "y2_norm"}
+            return (report.get("schema_version") == "0.2.0"
+                    and report.get("decoded_frames", 0) == report.get("final_frames", -1)
+                    and expected_columns <= set(table.columns))
         if stage == "fullres-ocr":
             table = pd.read_parquet(ROOT / "workspace" / "ocr_fullres" / video_id / "regions.parquet")
             report = json.loads((ROOT / "workspace" / "ocr_fullres" / video_id / "report.json").read_text(encoding="utf-8"))
@@ -266,7 +271,8 @@ def claim(connection: sqlite3.Connection, shard: int, worker_id: str, stages: tu
                 f"SELECT stage,status FROM jobs WHERE video_id=? AND stage IN ({','.join('?' for _ in required_stages)}) AND config_hash=?",
                 (row["video_id"], *required_stages, config),
             ).fetchall()
-            if len(dependency_rows) == len(dependencies) and all(item["status"] == "completed" for item in dependency_rows):
+            if (len(dependency_rows) == len(required_stages)
+                    and all(item["status"] == "completed" for item in dependency_rows)):
                 selected = row
                 break
         if selected is None:

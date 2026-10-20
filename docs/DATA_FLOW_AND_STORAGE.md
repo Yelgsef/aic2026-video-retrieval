@@ -51,35 +51,50 @@ features được cung cấp sẵn.
 
 ```mermaid
 flowchart LR
-    SCENES["semantic scenes"] --> VLM["contact sheets\n+ 9Router scene enrichment"]
-    VIDEO["source video"] --> VLM
-    VLM --> VLMOUT["gemini_batches/\nthen gemini_parsed/"]
-    SCENES --> OBJECTS["YOLO-World objects\n(count, boxes, relations)"]
+    SCENEJSON["workspace/semantic_scenes/{video_id}/scenes.json"] --> VLM["VLM scene enrichment\n(contact sheets + 9Router)"]
+    MANIFEST["workspace/manifests/videos.parquet\nfield: video_path"] --> VIDEO["source video .mp4"]
+    VIDEO --> VLM
+    VLM --> BATCH["workspace/gemini_batches/{video_id}/\nrequests.jsonl + responses.jsonl"]
+    BATCH --> PARSED["Parse VLM responses"]
+    PARSED --> VLMOUT["workspace/gemini_parsed/{video_id}/\nscenes.jsonl"]
+
+    SCENEPQ["workspace/semantic_scenes/{video_id}/scenes.parquet\n(scene bounds + asr_exact/context)"] --> OBJECTS["YOLO-World object detection"]
     VIDEO --> OBJECTS
-    FIDX["SO400M frame metadata"] --> OBJECTS
-    OBJECTS --> OBJOUT["objects_yoloworld/"]
-    VIDEO --> OCR["PP-OCR full-resolution"]
+    FIDX["workspace/retrieval/google_siglip2_so400m_patch14_384/\n{video_id}_final_from_google_siglip2_base_patch16_224/metadata.parquet"] --> OBJECTS
+    OBJECTS --> OBJOUT["workspace/objects_yoloworld/{video_id}/\ndetections.parquet + report.json"]
+
+    VIDEO --> OCR["Full-resolution OCR (PP-OCR)"]
     FIDX --> OCR
-    OCR --> OCROUT["ocr_fullres/\nexact frame provenance"]
-    TRANSCRIPT["raw ASR"] --> ASNORM["optional 9Router\nASR normalization"]
-    TRANSCRIPT --> DOCS
-    ASNORM --> ASNOUT["asr_normalization/"]
-    SCENES --> DOCS["build_unified_scene_documents.py"]
+    OCR --> OCROUT["workspace/ocr_fullres/{video_id}/\nregions.parquet + crops/reports"]
+
+    TRANSCRIPT["workspace/asr/faster_whisper_large_v3/\n{video_id}.json"] --> ASNORM["Optional correction of uncertain ASR\n(prepare + 9Router + parse)"]
+    ASNORM --> ASNOUT["workspace/asr_normalization/{video_id}/\nrequests.jsonl + responses.jsonl\nreport.json + normalized.json"]
+
+    SCENEPQ --> DOCS["Build unified scene documents"]
     VLMOUT --> DOCS
     OBJOUT --> DOCS
     OCROUT --> DOCS
     ASNOUT --> DOCS
-    DOCS --> SD["workspace/scene_documents/{video_id}/"]
-    FIDX --> BUILD["build_offline_hybrid_index.py"]
+    DOCS --> SD["workspace/scene_documents/{video_id}/\nscenes.jsonl + scenes.parquet + report.json"]
+
+    FIDX --> BUILD["Build offline hybrid index"]
     SD --> BUILD
-    SCENES --> BUILD
-    BUILD --> INDEX["offline_index*/\nParquet + NumPy + SQLite FTS"]
-    INDEX --> BGE["build_bge_m3_scene_index.py\nscene text vectors"]
+    SCENEPQ --> BUILD
+    BUILD --> INDEX["workspace/offline_index*/\nParquet + NumPy + search.sqlite3"]
+    INDEX --> BGE["Build BGE-M3 scene vectors"]
     BGE --> INDEX
-    VIDEO --> OPEN["build_openclip_frame_index.py\noptional; reads source video"]
+    VIDEO --> OPEN["Build optional OpenCLIP frame index"]
     INDEX --> OPEN
     OPEN --> INDEX
 ```
+
+Trong sơ đồ, `{video_id}` là ID như `L21_V001`. Đường dẫn video gốc được lấy
+từ cột `video_path` của `workspace/manifests/videos.parquet`; các nhánh OCR và
+object detection dùng `metadata.parquet` trong SO400M Final để biết frame nào
+cần xử lý và timestamp/shot tương ứng. Transcript thô đã được Faster-Whisper
+tạo ở Flow A và nằm trong `scenes.parquet` dưới dạng `asr_exact`/`asr_context`;
+nhánh ASR ở Flow B chỉ sửa có điều kiện các đoạn đáng ngờ. Unified scene
+documents lấy ASR thô từ semantic scenes và chỉ đọc `normalized.json` nếu có.
 
 Enrichment branches có thể chạy độc lập sau khi artifact đầu vào sẵn sàng.
 `run_flow_a_scheduler.py` điều phối riêng Flow A sau khi manifest đã sẵn sàng.
@@ -167,12 +182,12 @@ Service trả response cho frontend. `/frame` giải mã và cache JPEG từ vid
 | ASR | source video path from `videos.parquet` | `workspace/asr/faster_whisper_large_v3/{video_id}.json` | Compact transcript with `video_id`, model, detected language, duration and segments. Each segment stores start/end/text, `avg_logprob` and its word timestamps/text/probability. |
 | Semantic scenes | shots, dense Base features, selected keyframes, ASR and video manifest | `workspace/semantic_scenes/{video_id}/scenes.parquet`, `scenes.json`, `report.json` | Merges adjacent technical shots using Base-feature similarity and timing/ASR/transition rules. Parquet is the compact downstream contract; JSON retains representative-frame details and merge diagnostics for VLM preparation and review. SO400M Final embeddings are a separate branch and are not read by this builder. |
 | Full-resolution OCR | source video + SO400M frame metadata | `workspace/ocr_fullres/{video_id}/regions.parquet`, crops, candidates, reports | OCR text and exact frame provenance; uncertain local OCR can be sent for remote crop reading. |
-| Objects/spatial evidence | source video, SO400M metadata and semantic scenes | `workspace/objects_yoloworld/{video_id}/detections.parquet`, optional crops and `report.json` | Frame-level labels, confidence, boxes, normalized coordinates and scene mapping. |
+| Objects/spatial evidence | source video, SO400M metadata and semantic scenes | `workspace/objects_yoloworld/{video_id}/detections.parquet` and `report.json` | Frame-level labels, confidence, normalized boxes and scene mapping. Detection rows keep only fields consumed by unified scene documents. |
 | Scene VLM enrichment | semantic scenes, selected source frames and contact sheets | `workspace/gemini_batches/{video_id}/` requests/responses; parsed output at `workspace/gemini_parsed/{video_id}/scenes.jsonl` | Remote 9Router scene summaries, OCR lines, entities, actions and keywords. Legacy `gemini` names remain in artifact paths. |
-| Optional ASR normalization | raw ASR segments and neighbors | `workspace/asr_normalization/{video_id}/` requests, responses and `normalized.json` | Conditional correction of uncertain transcript segments; raw text is retained. |
+| Optional ASR normalization | `workspace/asr/faster_whisper_large_v3/{video_id}.json` raw segments and neighbors | `workspace/asr_normalization/{video_id}/` (`requests.jsonl`, `responses.jsonl`, `report.json`, `normalized.json`) | Conditional correction of uncertain segments. `normalized.json` stores only `start`, `end` and `normalized_text`; the raw transcript remains in the Faster-Whisper source file. |
 | Unified scene documents | semantic scenes + parsed VLM + objects + full-res OCR + optional normalized ASR | `workspace/scene_documents/{video_id}/scenes.jsonl`, `scenes.parquet`, `report.json` | Consolidates search text and structured evidence for each scene. |
 
-The full-resolution OCR crop response parser updates `regions.parquet` in place with `gemini_text`, `final_text` and verification fields. Semantic-scene construction reads word timestamps nested under each ASR segment. Conditional ASR normalization uses segment confidence and word probabilities and keeps raw and normalized text per segment without writing duplicate concatenated transcripts. The scene-document builder then uses searchable full-resolution OCR and prefers normalized ASR when available.
+The full-resolution OCR crop response parser updates `regions.parquet` in place with `gemini_text`, `final_text` and verification fields. Semantic-scene construction reads word timestamps nested under each ASR segment. Conditional ASR normalization uses segment confidence and word probabilities; its parser writes only timestamps and normalized text, leaving the raw transcript in the Faster-Whisper source file. The scene-document builder then uses searchable full-resolution OCR and prefers normalized ASR when available.
 
 ## 3. Offline index toàn cục
 
