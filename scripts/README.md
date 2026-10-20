@@ -4,7 +4,8 @@
 
 ## Production orchestration
 
-- `run_dataset_scheduler.py`: scheduler có trạng thái/resume cho preprocessing từng video.
+- `run_flow_a_scheduler.py`: scheduler riêng cho Flow A, dùng `workspace/scheduler/flow_a_jobs.sqlite3`.
+- `run_dataset_scheduler.py`: scheduler rộng hơn có trạng thái/resume cho các stage local theo video.
 - `run_full_dataset_supervisor.py`: chạy scheduler nhiều GPU, enrichment và build index.
 - `run_gemini_subset_supervisor.py`: enrichment 9Router và build index cho subset. Tên `gemini` chỉ được giữ để tương thích lệnh cũ.
 - `serve_offline_query.py`: HTTP backend KIS/QA/TRAKE.

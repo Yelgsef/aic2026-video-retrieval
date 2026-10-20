@@ -26,7 +26,7 @@ DEPENDENCY = {
     "siglip-base": "sampling",
     "siglip-so400m-final": "siglip-base",
     "asr-large-v3": None,
-    "semantic-scenes": ("siglip-so400m-final", "asr-large-v3"),
+    "semantic-scenes": ("siglip-base", "asr-large-v3"),
     "objects-yoloworld": "semantic-scenes",
     "fullres-ocr": "siglip-so400m-final",
     "asr-normalize-prepare": "asr-large-v3",
@@ -67,9 +67,9 @@ def configuration_hash() -> str:
     return hashlib.sha256(json.dumps(payload, sort_keys=True).encode()).hexdigest()[:16]
 
 
-def connect() -> sqlite3.Connection:
-    DB_PATH.parent.mkdir(parents=True, exist_ok=True)
-    connection = sqlite3.connect(DB_PATH, timeout=60)
+def connect(db_path: Path = DB_PATH) -> sqlite3.Connection:
+    db_path.parent.mkdir(parents=True, exist_ok=True)
+    connection = sqlite3.connect(db_path, timeout=60)
     connection.row_factory = sqlite3.Row
     connection.execute("PRAGMA journal_mode=WAL")
     connection.execute("PRAGMA synchronous=FULL")
@@ -106,7 +106,7 @@ def connect() -> sqlite3.Connection:
     return connection
 
 
-def initialize(connection: sqlite3.Connection, shard_count: int) -> int:
+def initialize(connection: sqlite3.Connection, shard_count: int, stages: tuple[str, ...] = STAGES) -> int:
     videos = pd.read_parquet(ROOT / "workspace" / "manifests" / "videos.parquet")
     config = configuration_hash()
     inserted = 0
@@ -114,7 +114,7 @@ def initialize(connection: sqlite3.Connection, shard_count: int) -> int:
         for index, row in enumerate(videos.sort_values("video_id").itertuples(index=False)):
             if not bool(row.video_readable):
                 continue
-            for stage in STAGES:
+            for stage in stages:
                 cursor = connection.execute(
                     "INSERT OR IGNORE INTO jobs(video_id,stage,config_hash,shard) VALUES(?,?,?,?)",
                     (row.video_id, stage, config, index % shard_count),
@@ -205,8 +205,9 @@ def artifact_valid(video_id: str, stage: str) -> bool:
     return False
 
 
-def reconcile(connection: sqlite3.Connection, stale_seconds: int) -> dict[str, int]:
-    config = configuration_hash()
+def reconcile(connection: sqlite3.Connection, stale_seconds: int,
+              config: str | None = None) -> dict[str, int]:
+    config = config or configuration_hash()
     now = time.time()
     reclaimed = connection.execute(
         "UPDATE jobs SET status='pending',worker_id=NULL,started_at=NULL,heartbeat_at=NULL,last_error='stale lease reclaimed' "
@@ -230,8 +231,9 @@ def reconcile(connection: sqlite3.Connection, stale_seconds: int) -> dict[str, i
 
 
 def claim(connection: sqlite3.Connection, shard: int, worker_id: str, stages: tuple[str, ...],
-          video_ids: tuple[str, ...] = ()) -> sqlite3.Row | None:
-    config = configuration_hash()
+          video_ids: tuple[str, ...] = (), dependency_graph: dict = DEPENDENCY,
+          config: str | None = None) -> sqlite3.Row | None:
+    config = config or configuration_hash()
     connection.execute("BEGIN IMMEDIATE")
     try:
         placeholders = ",".join("?" for _ in stages)
@@ -244,20 +246,25 @@ def claim(connection: sqlite3.Connection, shard: int, worker_id: str, stages: tu
             shard_filter = ""
             video_filter = f" AND video_id IN ({','.join('?' for _ in video_ids)})"
             parameters = [config, *stages, *video_ids]
+        stage_order = {stage: index for index, stage in enumerate(stages)}
+        order_case = "CASE stage " + " ".join(
+            f"WHEN ? THEN {index}" for stage, index in stage_order.items()
+        ) + f" ELSE {len(stage_order)} END"
+        parameters.extend(stage_order)
         rows = connection.execute(
-            f"SELECT * FROM jobs WHERE config_hash=?{shard_filter} AND status IN ('pending','retry') AND stage IN ({placeholders}){video_filter} ORDER BY video_id, CASE stage WHEN 'omnishot' THEN 1 WHEN 'sampling' THEN 2 WHEN 'siglip-base' THEN 3 WHEN 'siglip-so400m-final' THEN 4 WHEN 'asr-large-v3' THEN 5 WHEN 'semantic-scenes' THEN 6 WHEN 'objects-yoloworld' THEN 7 WHEN 'fullres-ocr' THEN 8 WHEN 'asr-normalize-prepare' THEN 9 WHEN 'gemini-batch-prepare' THEN 10 WHEN 'gemini-ocr-crop-prepare' THEN 11 ELSE 12 END",
+            f"SELECT * FROM jobs WHERE config_hash=?{shard_filter} AND status IN ('pending','retry') AND stage IN ({placeholders}){video_filter} ORDER BY video_id, {order_case}",
             parameters,
         ).fetchall()
         selected = None
         for row in rows:
-            dependency = DEPENDENCY[row["stage"]]
+            dependency = dependency_graph[row["stage"]]
             if dependency is None:
                 selected = row
                 break
-            dependencies = dependency if isinstance(dependency, tuple) else (dependency,)
+            required_stages = dependency if isinstance(dependency, tuple) else (dependency,)
             dependency_rows = connection.execute(
-                f"SELECT stage,status FROM jobs WHERE video_id=? AND stage IN ({','.join('?' for _ in dependencies)}) AND config_hash=?",
-                (row["video_id"], *dependencies, config),
+                f"SELECT stage,status FROM jobs WHERE video_id=? AND stage IN ({','.join('?' for _ in required_stages)}) AND config_hash=?",
+                (row["video_id"], *required_stages, config),
             ).fetchall()
             if len(dependency_rows) == len(dependencies) and all(item["status"] == "completed" for item in dependency_rows):
                 selected = row
@@ -309,16 +316,24 @@ def mark(connection: sqlite3.Connection, row: sqlite3.Row, status: str, elapsed:
         )
 
 
-def status_report(connection: sqlite3.Connection) -> dict:
+def status_report(connection: sqlite3.Connection, config: str | None = None,
+                  db_path: Path = DB_PATH) -> dict:
+    config = config or configuration_hash()
     rows = connection.execute(
         "SELECT stage,status,COUNT(*) AS count,SUM(COALESCE(elapsed_seconds,0)) AS seconds FROM jobs WHERE config_hash=? GROUP BY stage,status ORDER BY stage,status",
-        (configuration_hash(),),
+        (config,),
     ).fetchall()
-    return {"config_hash": configuration_hash(), "database": str(DB_PATH), "counts": [dict(row) for row in rows]}
+    return {"config_hash": config, "database": str(db_path), "counts": [dict(row) for row in rows]}
 
 
-def main() -> None:
-    parser = argparse.ArgumentParser(description="Crash-resumable AIC dataset scheduler.")
+def main(profile: dict | None = None) -> None:
+    profile = profile or {}
+    stages = tuple(profile.get("stages", STAGES))
+    dependencies = profile.get("dependencies", DEPENDENCY)
+    db_path = Path(profile.get("db_path", DB_PATH))
+    config = configuration_hash()
+    parser = argparse.ArgumentParser(description=profile.get(
+        "description", "Crash-resumable AIC dataset scheduler."))
     parser.add_argument("--init", action="store_true")
     parser.add_argument("--run", action="store_true")
     parser.add_argument("--status", action="store_true")
@@ -326,7 +341,7 @@ def main() -> None:
     parser.add_argument("--shard-index", type=int, default=0)
     parser.add_argument("--worker-id", default=f"{os.environ.get('COMPUTERNAME','worker')}:{os.getpid()}")
     parser.add_argument("--max-jobs", type=int, default=0, help="0 means run until the queue is empty.")
-    parser.add_argument("--stages", nargs="+", choices=STAGES, default=STAGES)
+    parser.add_argument("--stages", nargs="+", choices=stages, default=stages)
     parser.add_argument("--video-ids", nargs="+", default=[],
                         help="Restrict work to an explicit validation subset.")
     parser.add_argument("--max-attempts", type=int, default=3)
@@ -335,11 +350,12 @@ def main() -> None:
     if not 0 <= args.shard_index < args.shard_count:
         raise ValueError("shard-index must be within shard-count")
 
-    connection = connect()
+    connection = connect(db_path)
     if args.init:
-        print(json.dumps({"inserted": initialize(connection, args.shard_count), **reconcile(connection, args.stale_seconds)}, indent=2))
+        print(json.dumps({"inserted": initialize(connection, args.shard_count, stages),
+                          **reconcile(connection, args.stale_seconds, config)}, indent=2))
     if args.status:
-        print(json.dumps(status_report(connection), indent=2))
+        print(json.dumps(status_report(connection, config, db_path), indent=2))
     if not args.run:
         return
 
@@ -349,11 +365,11 @@ def main() -> None:
 
     signal.signal(signal.SIGINT, request_stop)
     signal.signal(signal.SIGTERM, request_stop)
-    reconcile(connection, args.stale_seconds)
+    reconcile(connection, args.stale_seconds, config)
     processed = 0
     while not STOP_REQUESTED and (args.max_jobs == 0 or processed < args.max_jobs):
         row = claim(connection, args.shard_index, args.worker_id, tuple(args.stages),
-                    tuple(args.video_ids))
+                    tuple(args.video_ids), dependencies, config)
         if row is None:
             break
         started = time.time()
@@ -368,7 +384,7 @@ def main() -> None:
             mark(connection, row, retry_status, elapsed, error)
         processed += 1
         print(json.dumps({"video_id": row["video_id"], "stage": row["stage"], "ok": valid, "elapsed_seconds": round(elapsed, 2)}), flush=True)
-    print(json.dumps(status_report(connection), indent=2))
+    print(json.dumps(status_report(connection, config, db_path), indent=2))
 
 
 if __name__ == "__main__":

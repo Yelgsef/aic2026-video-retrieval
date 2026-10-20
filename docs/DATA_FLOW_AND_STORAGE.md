@@ -82,9 +82,13 @@ flowchart LR
 ```
 
 Enrichment branches có thể chạy độc lập sau khi artifact đầu vào sẵn sàng.
-`run_dataset_scheduler.py` theo dõi stage local theo video; supervisor điều phối
-worker/enrichment. Build index toàn cục là bước riêng sau khi scene documents
-đã sẵn sàng.
+`run_flow_a_scheduler.py` điều phối riêng Flow A sau khi manifest đã sẵn sàng.
+Semantic scenes chờ SigLIP2 Base (dense features + keyframes) và ASR; nó không
+chờ SO400M Final. Nhánh SO400M Final vẫn chạy từ SigLIP2 Base song song để
+cấp visual vectors cho retrieval và frame metadata cho OCR/object detection.
+`run_dataset_scheduler.py` theo dõi các stage local rộng hơn; supervisors điều
+phối worker/enrichment. Build index toàn cục là bước riêng sau khi scene
+documents đã sẵn sàng.
 
 ### Flow C — Request chung: browser tới retrieval candidates (online)
 
@@ -147,7 +151,7 @@ Flow D-F nhận candidates từ Flow C; output quay về service dưới dạng 
 Service trả response cho frontend. `/frame` giải mã và cache JPEG từ video gốc;
 `/video` stream video gốc, không sao chép media vào index.
 
-`run_dataset_scheduler.py` tracks resumable local stages per video. `run_full_dataset_supervisor.py` runs sharded local workers and starts enrichment/index jobs for completed videos. `run_gemini_subset_supervisor.py` parses enrichment, builds unified scene documents, then builds an index for its selected video set. The scheduler itself does not build an index.
+`run_flow_a_scheduler.py` tracks Flow A independently in its own SQLite database. `run_dataset_scheduler.py` tracks broader local processing/enrichment stages; the full-dataset and Gemini-subset supervisors coordinate those stages and downstream index jobs. The schedulers themselves do not build a global index.
 
 ## 2. Stage offline và artifact
 
@@ -226,7 +230,8 @@ Validation and tuning scripts create datasets, pseudo-labels, review packs and r
 
 ## 7. Các entry point chính
 
-- `scripts/run_dataset_scheduler.py`: per-video stage graph, artifact checks and resumable SQLite state.
+- `scripts/run_flow_a_scheduler.py`: dedicated Flow A stage graph and resumable SQLite state.
+- `scripts/run_dataset_scheduler.py`: broader per-video stage graph, artifact checks and resumable SQLite state.
 - `scripts/run_full_dataset_supervisor.py`, `scripts/run_gemini_subset_supervisor.py`: orchestration around local stages, remote enrichment and index builds.
 - `scripts/build_offline_hybrid_index.py`, `scripts/build_bge_m3_scene_index.py`, `scripts/build_openclip_frame_index.py`: global index assembly.
 - `aic_pipeline/offline_search_engine.py`: online retrieval and fusion over the persisted index.

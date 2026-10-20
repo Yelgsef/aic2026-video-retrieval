@@ -75,19 +75,19 @@ audit dataset
 
 Scheduler lưu một job cho mỗi `(video_id, stage, config_hash)`. Artifact hợp lệ được reconcile thành `completed`; job stale/retry có thể tiếp tục mà không xử lý lại phần đã xong.
 
-Chạy một video smoke test:
+Chạy riêng Flow A cho một video (cần tạo `videos.parquet` bằng audit trước):
 
 ```bash
 CUDA_VISIBLE_DEVICES=0 uv run --project environments/siglip2 \
-  python scripts/run_dataset_scheduler.py --init --run \
-  --shard-count 1 --shard-index 0 --worker-id smoke --video-ids L21_V001
+  python scripts/run_flow_a_scheduler.py --init --run \
+  --shard-count 1 --shard-index 0 --worker-id flow-a --video-ids L21_V001
 ```
 
 Xem trạng thái:
 
 ```bash
 uv run --project environments/siglip2 \
-  python scripts/run_dataset_scheduler.py --status
+  python scripts/run_flow_a_scheduler.py --status
 ```
 
 Chạy hai GPU nên đặt mỗi worker trong một cửa sổ `tmux` riêng, cùng `--shard-count 2` và khác `--shard-index 0/1`.

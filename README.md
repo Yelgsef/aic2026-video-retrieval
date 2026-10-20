@@ -28,7 +28,8 @@ Qwen chỉ phân tích query lúc truy vấn; bật Qwen không yêu cầu embed
 
 ## Entrypoint chính
 
-- `scripts/run_dataset_scheduler.py`: chạy và resume các stage offline theo video.
+- `scripts/run_flow_a_scheduler.py`: chạy và resume riêng các stage của Flow A.
+- `scripts/run_dataset_scheduler.py`: chạy và resume các stage offline rộng hơn theo video.
 - `scripts/run_full_dataset_supervisor.py`: điều phối nhiều GPU và enrichment qua 9Router.
 - `scripts/run_gemini_subset_supervisor.py`: supervisor enrichment/index cho một tập video. Tên file được giữ để tương thích lệnh cũ; luồng hiện tại gọi 9Router, không phải Gemini Batch API.
 - `scripts/serve_offline_query.py`: backend KIS, QA và TRAKE.
