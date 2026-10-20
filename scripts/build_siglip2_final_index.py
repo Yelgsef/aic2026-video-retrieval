@@ -3,7 +3,6 @@ from __future__ import annotations
 import argparse
 import json
 import os
-import time
 from pathlib import Path
 
 os.environ.setdefault("HF_HUB_OFFLINE", "1")
@@ -31,11 +30,19 @@ def main() -> None:
     parser.add_argument("--batch-size", type=int, default=8)
     parser.add_argument("--force", action="store_true")
     args = parser.parse_args()
+    if args.batch_size < 1:
+        parser.error("--batch-size must be at least 1")
 
     source = ROOT / "workspace" / "keyframes" / args.source_encoder_id / f"{args.video_id}.parquet"
-    metadata = pd.read_parquet(source).sort_values("frame_id").reset_index(drop=True)
-    if metadata.empty or metadata.frame_id.duplicated().any():
+    source_metadata = pd.read_parquet(source).sort_values("frame_id").reset_index(drop=True)
+    if source_metadata.empty or source_metadata.frame_id.duplicated().any():
         raise ValueError("Final keyframe manifest is empty or has duplicate frame IDs")
+    required_columns = {"frame_id", "pts_time", "shot_id"}
+    missing_columns = required_columns - set(source_metadata.columns)
+    if missing_columns:
+        raise ValueError(f"Keyframe manifest is missing columns: {sorted(missing_columns)}")
+    metadata = source_metadata[["frame_id", "pts_time", "shot_id"]].copy()
+    metadata.insert(0, "video_id", args.video_id)
     videos = pd.read_parquet(ROOT / "workspace" / "manifests" / "videos.parquet")
     row = videos.loc[videos.video_id == args.video_id]
     if len(row) != 1:
@@ -54,17 +61,15 @@ def main() -> None:
     if not capture.isOpened():
         raise RuntimeError(f"Cannot open {video_path}")
     targets = metadata.frame_id.astype(int).tolist()
-    position = frame_id = decoded = 0
+    position = frame_id = 0
     images: list[Image.Image] = []
     chunks: list[np.ndarray] = []
-    started = time.time()
-
     def encode(batch: list[Image.Image]) -> torch.Tensor:
         try:
             inputs = processor(images=batch, return_tensors="pt").to(device)
             with torch.inference_mode():
                 vectors = model.get_image_features(**inputs)
-                return torch.nn.functional.normalize(vectors.float(), dim=-1).cpu()
+                return vectors.float().cpu()
         except torch.cuda.OutOfMemoryError:
             if len(batch) == 1:
                 raise
@@ -82,7 +87,6 @@ def main() -> None:
             ok, frame = capture.read()
             if not ok:
                 break
-            decoded += 1
             if frame_id == targets[position]:
                 images.append(Image.fromarray(cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)))
                 position += 1
@@ -97,22 +101,16 @@ def main() -> None:
 
     embeddings = np.concatenate(chunks)
     config = {
-        "pipeline_version": "0.2.0",
+        "pipeline_version": "0.3.0",
         "video_id": args.video_id,
         "model_id": args.model_id,
         "encoder_id": target_encoder,
         "index_kind": "final_keyframes_rerank",
         "source_encoder_id": args.source_encoder_id,
-        "source_manifest": str(source),
-        "video_path": str(video_path),
         "count": len(metadata),
         "dimension": int(embeddings.shape[1]),
         "normalized": True,
         "similarity": "cosine_via_inner_product",
-        "device": str(device),
-        "dtype": str(dtype),
-        "decoded_frames": decoded,
-        "elapsed_seconds": round(time.time() - started, 3),
     }
     save_index(output, embeddings, metadata, config)
     print(json.dumps(config, ensure_ascii=False, indent=2))

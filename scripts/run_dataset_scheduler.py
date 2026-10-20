@@ -49,6 +49,7 @@ def configuration_hash() -> str:
         "visual_model": "google/siglip2-base-patch16-224",
         "visual_batch_size": 16,
         "rerank_model": "google/siglip2-so400m-patch14-384",
+        "so400m_final_version": "0.3.0",
         "asr_model": "large-v3",
         "asr_schema_version": "0.2.0",
         "asr_compute_type": "float16",
@@ -162,7 +163,15 @@ def artifact_valid(video_id: str, stage: str) -> bool:
             directory = ROOT / "workspace" / "retrieval" / "google_siglip2_so400m_patch14_384" / f"{video_id}_final_from_google_siglip2_base_patch16_224"
             vectors = np.load(directory / "embeddings.npy", mmap_mode="r")
             metadata = pd.read_parquet(directory / "metadata.parquet")
-            return len(vectors) == len(metadata) > 0 and vectors.shape[1] == 1152
+            config = json.loads((directory / "config.json").read_text(encoding="utf-8"))
+            return (len(vectors) == len(metadata) > 0
+                    and vectors.shape[1] == 1152
+                    and {"video_id", "frame_id", "pts_time", "shot_id"} <= set(metadata.columns)
+                    and metadata.frame_id.is_unique
+                    and metadata.video_id.eq(video_id).all()
+                    and config.get("pipeline_version") == "0.3.0"
+                    and config.get("video_id") == video_id
+                    and config.get("model_id") == "google/siglip2-so400m-patch14-384")
         if stage == "asr-large-v3":
             value = json.loads((ROOT / "workspace" / "asr" / "faster_whisper_large_v3" / f"{video_id}.json").read_text(encoding="utf-8"))
             return (value.get("schema_version") == "0.2.0"
