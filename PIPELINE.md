@@ -126,9 +126,8 @@ Score được robust-normalize và hợp nhất bằng RRF/normalized fusion th
 Query variants -> hybrid retrieval -> fusion -> reranker -> danh sách frame/video xếp hạng. Output hỗ trợ top 100 submission.
 
 Các số/mã xuất hiện nguyên vẹn trong query có một exact-metadata branch để tránh
-visual similarity nhầm `126` thành `152`. API cũng có tầng dense short-clip moment
-refinement cho ablation (`moment_refinement=true`), nhưng mặc định tắt: benchmark
-hiện tại cho thấy embedding ảnh tĩnh chưa đủ ổn định để tự đếm “lần thứ hai”.
+visual similarity nhầm `126` thành `152`. Dense short-clip moment refinement có
+prototype trong codebase nhưng chưa được nối vào API handler hiện tại.
 
 KIS còn trả một Review Pack riêng gồm top 3 video, top scene theo từng video và
 tối đa 25 dense stride-5 frame mỗi scene. Frontend cho phép phát đoạn ở 0.25×/0.5×,
@@ -137,7 +136,7 @@ và không tự ghi đè kết quả retrieval.
 
 ### QA
 
-Hybrid retrieval -> evidence-aware candidate selection -> contact sheet -> 9Router QA -> optional full-resolution refinement -> answer variants và frame evidence.
+Hybrid retrieval -> evidence-aware candidate selection -> FE chọn ảnh evidence -> QA provider -> answer và frame evidence. UI hiện gọi Google AI Studio; backend có adapter 9Router nhưng FE chưa gửi QA answer tới provider đó.
 
 Nguyên tắc QA:
 
@@ -149,7 +148,7 @@ Nguyên tắc QA:
 
 ### TRAKE
 
-Tách query thành chuỗi sự kiện -> retrieve candidate scenes -> short-clip temporal evidence -> dynamic/global sequence alignment -> trả ordered frame IDs và video ID.
+Tách query thành chuỗi sự kiện -> retrieve candidate scenes cho từng event -> kiểm tra thứ tự candidate frames bằng `frame_id` -> trả video ID và ordered frame IDs. Dense `TemporalAligner`/dynamic sequence alignment hiện chưa được nối vào API handler.
 
 ## 9. Scheduler cho toàn dataset
 

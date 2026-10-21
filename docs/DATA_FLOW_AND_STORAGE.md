@@ -1,6 +1,6 @@
 # Luồng dữ liệu và nơi lưu
 
-Tài liệu này lần theo dữ liệu theo code production hiện tại: từ video đầu vào, qua các stage offline, vào index, rồi tới truy vấn KIS/QA/TRAKE. Các path dưới đây tính từ project root.
+Tài liệu này lần theo dữ liệu theo code production hiện tại: từ video đầu vào, qua các stage offline, vào index, rồi tới truy vấn KIS/QA/TRAKE. Xem [`architecture.md`](architecture.md) trước để biết vai trò tổng thể của từng flow và kiến trúc frontend/backend. Các path dưới đây tính từ project root.
 
 > `workspace/` không được commit và hiện chưa có trong checkout này. Sơ đồ mô tả artifact contract mà code đọc/ghi, không khẳng định mọi artifact đang tồn tại trên máy. `archive/video/` và `models/` là dữ liệu ngoài Git.
 

@@ -1,8 +1,10 @@
 # Repository guide
 
-Tài liệu này mô tả cấu trúc và cách vận hành code hiện tại trong repository.
-Các artifact dữ liệu, checkpoint và index nằm trên máy hoặc object storage; chúng
-không được commit cùng source code.
+Tài liệu này là bản đồ cấu trúc code và entry point trong repository. Xem
+[`architecture.md`](architecture.md) để hiểu tổng thể Flow A-F và kiến trúc
+frontend/backend; xem [`DATA_FLOW_AND_STORAGE.md`](DATA_FLOW_AND_STORAGE.md) để
+tra input/output và vị trí artifact. Dataset, checkpoint và index nằm trên máy
+hoặc object storage, không được commit cùng source code.
 
 ## 1. Cấu trúc repository
 
@@ -14,7 +16,7 @@ không được commit cùng source code.
 | `frontend/` | Web app chính cho KIS, QA, TRAKE và kiểm tra frame; FastAPI phục vụ cùng origin. |
 | `environments/` | Các project `uv` tách theo workload và dependency. |
 | `tests/` | Unit tests cho sampling, retrieval, fusion, routing, grounding và temporal alignment. |
-| `docs/` | Data flow, repository guide và hướng dẫn Query Transformer. |
+| `docs/` | Architecture, data flow/storage, repository guide và hướng dẫn Query Transformer. |
 | `third_party/OmniShotCut/` | Git submodule OmniShotCut dùng cho shot boundary detection. |
 | `archive/video/` | Video nguồn; manifest trỏ tới file trong archive. |
 | `archive/` | Một số artifact/feature cũ được lưu để tham chiếu; không phải output mặc định của flow hiện tại. |
@@ -90,8 +92,9 @@ chọn Parquet/vector cần cho serving, dựng lại FTS và OpenCLIP sidecar, 
 ### Flow C — truy vấn online
 
 `frontend/` gửi query tới `backend/`; backend nạp `OfflineSearchEngine`, Milvus
-Lite và manifest một lần khi khởi động. KIS/QA dùng chung retrieval. QA có thể
-gửi frame đã chọn đến AI Studio hoặc 9Router. TRAKE truy vấn từng event rồi
+Lite và manifest một lần khi khởi động. KIS/QA dùng chung retrieval. QA hiện
+gửi frame đã chọn tới Google AI Studio từ UI; backend có adapter 9Router nhưng
+frontend chưa gọi QA answer qua provider này. TRAKE truy vấn từng event rồi
 kiểm tra thứ tự bằng `frame_id`; dense `TemporalAligner` chưa được nối vào
 request handler hiện tại. Candidate pool của API được cố định ở 100 cho mỗi
 query/event; `top_k` điều khiển số kết quả trả về.
