@@ -22,7 +22,8 @@ from pymilvus import MilvusClient
 from transformers import AutoModel, AutoModelForSequenceClassification, AutoProcessor, AutoTokenizer, CLIPModel
 
 from .query_understanding import build_query_plan
-from .query_transformer import LocalQueryTransformer
+from .query_transformer import (LocalQueryTransformer, QueryTransformerError,
+                                QueryTransformerUnavailable)
 from .object_spatial import structured_object_scores
 from .fusion_profiles import accepted_profile
 from .gemini_text_retrieval import GeminiTextServices
@@ -376,15 +377,21 @@ class OfflineSearchEngine:
             task = route_query(query)
             plan = build_query_plan(task.retrieval_query)
             transformer_error = None
-            if query_transformer and self.query_transformer.available:
+            expansion = None
+            if query_transformer:
+                if not self.query_transformer.available:
+                    raise QueryTransformerUnavailable(
+                        "Qwen was requested but is unavailable. Install the configured model and runtime, "
+                        "then restart the backend.")
                 try:
-                    plan = self.query_transformer.enhance(plan)
+                    plan, expansion = self.query_transformer.enhance(plan)
                 except Exception as exc:
-                    transformer_error = f"{type(exc).__name__}: {exc}"
+                    if isinstance(exc, (QueryTransformerError, QueryTransformerUnavailable)):
+                        raise
+                    raise QueryTransformerError(f"Qwen query transformation failed: {exc}") from exc
             weights = intent_weights(plan.intent)
             timings["query_plan"] = time.perf_counter() - stage_started
             variants = list(plan.variants)
-            expansion = None
             text_first_scores = None
             stage_started = time.perf_counter()
             if online_gemini_text and self.gemini_text_available and task.task == "KIS":
@@ -605,6 +612,7 @@ class OfflineSearchEngine:
                     "query_expansion": expansion.model_dump() if expansion else None,
                     "query_transformer_requested": query_transformer,
                     "query_transformer_available": self.query_transformer.available,
+                    "query_transformer_used": plan.transformer_used,
                     "query_transformer_error": transformer_error,
                     "online_gemini_text": online_gemini_text,
                     "timings": {name: round(value, 4) for name, value in timings.items()},
@@ -622,7 +630,9 @@ class OfflineSearchEngine:
                 "gemini_text_available": self.gemini_text_available,
                 "openclip_available": self.openclip_available,
                 "query_transformer_available": self.query_transformer.available,
+                "query_transformer": self.query_transformer.status(),
                 "cuda_memory_allocated": int(torch.cuda.memory_allocated()) if self.device.type == "cuda" else 0}
 
     def close(self) -> None:
         self.milvus.close()
+        self.query_transformer.close()

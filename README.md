@@ -102,14 +102,19 @@ Logic nằm ở aic_pipeline/query_transformer.py. Đặt model tại:
 models/qwen2.5-1.5b-instruct-gguf/qwen2.5-1.5b-instruct-q4_k_m.gguf
 ~~~
 
-Chạy llama-server:
+Kiểm tra bản `llama-server` và các thiết bị inference khả dụng:
 
 ~~~bash
-llama-server -m models/qwen2.5-1.5b-instruct-gguf/qwen2.5-1.5b-instruct-q4_k_m.gguf --host 127.0.0.1 --port 8081 --n-gpu-layers 99 --ctx-size 2048
-curl http://127.0.0.1:8081/health
+llama-server --version
+llama-server --list-devices
 ~~~
 
-Service sẽ warm-up Qwen nếu model và llama-server khả dụng. Cache query nằm ở
+Backend tự khởi động `llama-server` khi model GGUF và binary khả dụng. Model
+được nạp khi query Qwen đầu tiên chạy; health tại `/api/health` báo backend,
+thiết bị chạy và trạng thái server trong `query_transformer`. Nếu binary có
+CUDA, Qwen dùng GPU; nếu không, model chạy CPU giới hạn 4 threads. Nếu Qwen
+được yêu cầu nhưng không khả dụng hoặc gặp lỗi, API báo lỗi thay vì âm thầm
+chạy tìm kiếm thuần. Cache query nằm ở
 workspace/offline_index_all_873/query_transformer_cache.sqlite3. Đổi model hoặc
 prompt chỉ cần xóa cache; không cần embed lại.
 

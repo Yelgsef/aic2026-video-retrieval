@@ -72,8 +72,7 @@ class Runtime:
 
 def public_search(runtime: Runtime, data: dict[str, Any]) -> dict[str, Any]:
     output = {key: value for key, value in data.items() if key not in {"results", "submissions"}}
-    output["query_transformer_used"] = bool(
-        data.get("query_transformer_requested", False) and data.get("query_transformer_available", False))
+    output["query_transformer_used"] = bool(data.get("query_transformer_used", False))
     output["retrieval_backend"] = "milvus_lite"
     results, seen = [], set()
     for item in data.get("results", []):

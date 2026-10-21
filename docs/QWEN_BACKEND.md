@@ -19,6 +19,15 @@ Bản GGUF được ưu tiên vì `query_transformer.py` có thể chạy qua
 ls -lh models/qwen2.5-1.5b-instruct-gguf/qwen2.5-1.5b-instruct-q4_k_m.gguf
 ```
 
+Nếu chưa có model, tải bản Q4_K_M chính thức (~1.1 GB):
+
+```bash
+mkdir -p models/qwen2.5-1.5b-instruct-gguf
+curl -fL \
+  https://huggingface.co/Qwen/Qwen2.5-1.5B-Instruct-GGUF/resolve/main/qwen2.5-1.5b-instruct-q4_k_m.gguf \
+  -o models/qwen2.5-1.5b-instruct-gguf/qwen2.5-1.5b-instruct-q4_k_m.gguf
+```
+
 ## 2. Cài llama.cpp
 
 Trên Linux/Vast, dùng binary `llama-server` tương thích CUDA và đặt nó trong
@@ -38,29 +47,19 @@ Trên Windows, `query_transformer.py` cũng tự tìm binary trong:
 %LOCALAPPDATA%\Microsoft\WinGet\Packages\ggml.llamacpp_*\llama-server.exe
 ```
 
-## 3. Khởi động Qwen backend
+## 3. Kiểm tra runtime
 
-Linux/Vast:
-
-```bash
-CUDA_VISIBLE_DEVICES=0 llama-server -m models/qwen2.5-1.5b-instruct-gguf/qwen2.5-1.5b-instruct-q4_k_m.gguf --host 127.0.0.1 --port 8081 --n-gpu-layers 99 --ctx-size 2048
-```
-
-Chạy nền trong tmux:
+Flow C tự khởi động `llama-server` ở loopback trên một port tạm khi query đầu
+tiên yêu cầu Qwen; không cần chạy một server riêng. Kiểm tra binary và thiết bị:
 
 ```bash
-tmux new -s qwen
+llama-server --version
+llama-server --list-devices
 ```
 
-Sau đó chạy lệnh `llama-server` ở trên. Detach bằng `Ctrl-B`, rồi `D`.
-
-Kiểm tra backend:
-
-```bash
-curl http://127.0.0.1:8081/health
-```
-
-Kết quả hợp lệ thường là HTTP `200` hoặc JSON báo trạng thái `ok`.
+Nếu binary liệt kê CUDA device, Qwen offload lên GPU. Nếu output là `(none)`,
+backend chạy Qwen trên CPU với 4 threads. Trạng thái cụ thể hiển thị trong
+`GET /api/health` → `query_transformer`.
 
 ## 4. Cách pipeline hiện tại sử dụng Qwen
 
@@ -70,8 +69,13 @@ File chính:
 aic_pipeline/query_transformer.py
 ```
 
-Pipeline tự khởi động `llama-server` nếu tìm thấy binary và file GGUF. Khi
-server đã chạy sẵn ở port khác, có thể kiểm thử trực tiếp bằng API:
+Backend tự khởi động `llama-server` khi có cả binary và file GGUF. Model chỉ
+được nạp khi query đầu tiên yêu cầu Qwen; vì vậy request Qwen đầu tiên có thể
+mất thêm thời gian khởi động. Trường `query_transformer` trong `/api/health`
+cho biết model/runtime có sẵn, thiết bị thực thi (`cuda` hoặc `cpu`) và server
+đã chạy chưa. Khi binary có CUDA, backend offload model lên GPU; binary CPU-only
+chạy model với tối đa bốn threads để không chiếm hết CPU của retrieval. Có thể
+kiểm tra model server độc lập bằng API:
 
 ```bash
 curl http://127.0.0.1:8081/v1/chat/completions \
@@ -92,8 +96,9 @@ uv run --project environments/siglip2 python scripts/serve_offline_query.py \
   --port 8765
 ```
 
-Service sẽ warm-up Qwen nếu model khả dụng. Request tìm kiếm có thể bật/tắt
-transformer bằng trường JSON:
+Request tìm kiếm có thể bật/tắt transformer bằng trường JSON. Nếu yêu cầu Qwen
+nhưng model/runtime không sẵn sàng, backend trả lỗi HTTP 503; nếu model lỗi khi
+phân tích query, backend trả HTTP 502 thay vì âm thầm tìm bằng query thường.
 
 ```json
 {
@@ -104,6 +109,10 @@ transformer bằng trường JSON:
 ```
 
 Nếu muốn giữ hành vi cũ, đặt `query_transformer` thành `false`.
+
+TRAKE chấp nhận các event `E1:`, `E2:`, `E3:` trên các dòng riêng hoặc ngăn
+cách bằng dấu chấm phẩy. Backend tách event trước khi chuẩn hóa khoảng trắng,
+rồi tùy chọn mở rộng từng event; thứ tự event không đổi.
 
 ## 6. Cache query
 

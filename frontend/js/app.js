@@ -566,7 +566,8 @@ function setupTrakePanel(modal) {
       errorBox.textContent = response.error
       resultsBox.hidden = true
     } else {
-      finishTrakeStream(resultsBox, response.data.trake_rows?.length ?? 0)
+      finishTrakeStream(resultsBox, response.data.trake_rows?.length ?? 0,
+        response.data.query_transformer_used === true)
     }
     submitLabel.textContent = 'Search with Qwen'
     setQueryButtonsDisabled(panel, false)

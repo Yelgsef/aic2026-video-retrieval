@@ -142,9 +142,9 @@ export function appendRejectedTrakeRow(container, row, rank, server, onOpen) {
   renderStreamRow(container, row, rank, server, onOpen, true)
 }
 
-export function finishTrakeStream(container, total) {
+export function finishTrakeStream(container, total, queryTransformerUsed = false) {
   container.querySelectorAll('.trake-row-skeleton').forEach((node) => node.remove())
   const meta = container.querySelector('.results__meta')
-  if (meta) meta.textContent = `Top ${total} video có chuỗi sự kiện hợp lệ.`
+  if (meta) meta.textContent = `Top ${total} video có chuỗi sự kiện hợp lệ.${queryTransformerUsed ? ' Đã mở rộng query bằng Qwen.' : ''}`
   if (!total) container.append(el('p', 'trake-empty', ['Không tìm thấy video có đủ các sự kiện theo đúng thứ tự.']))
 }

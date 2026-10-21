@@ -24,7 +24,7 @@ def split_events(query: str) -> tuple[str, ...]:
     # matching event text with `[^;()]+`, because event descriptions may
     # legitimately contain parentheses.
     marker = re.compile(
-        r"(?:^|[;\n])\s*(?:\(\s*\d+\s*\)|E\s*\d+\s*:|\d+\s*[.):-])\s*",
+        r"(?:^|[;\n])\s*(?:\(\s*\d+\s*\)|E\s*\d+\s*:?|\d+\s*[.):-])\s*",
         flags=re.IGNORECASE,
     )
     matches = list(marker.finditer(query))
@@ -43,12 +43,15 @@ def split_events(query: str) -> tuple[str, ...]:
 
 def route_query(query: str) -> TaskPlan:
     normalized = " ".join(query.strip().split())
-    events = split_events(normalized)
+    # Parse event markers before whitespace normalization so line breaks remain
+    # valid separators for numbered TRAKE events.
+    events = split_events(query.strip())
     if events:
         return TaskPlan("TRAKE", normalized, "", events, 0.9)
     folded = normalized.casefold()
-    question_markers = ("bao nhiêu", "màu gì", "là gì", "ai ", "ở đâu", "khi nào", "như thế nào",
+    question_markers = ("bao nhiêu", "màu gì", "là gì", "ở đâu", "khi nào", "như thế nào",
                         "đang cầm gì", "đang làm gì", "có gì", "loại gì")
-    if "?" in normalized or any(marker in folded for marker in question_markers):
+    asks_who = re.search(r"(?<!\w)ai(?!\w)", folded) is not None
+    if "?" in normalized or asks_who or any(marker in folded for marker in question_markers):
         return TaskPlan("QA", normalized, normalized, (), 0.85)
     return TaskPlan("KIS", normalized, "", (), 0.95)

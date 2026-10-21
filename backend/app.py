@@ -13,6 +13,7 @@ from backend.schemas import QaAnswerRequest, QueryRequest
 from backend.services.media_service import extract_frame, probe_video
 from backend.services.qa_service import answer_with_images
 from backend.services.query_service import execute_query
+from aic_pipeline.query_transformer import QueryTransformerError, QueryTransformerUnavailable
 
 
 @asynccontextmanager
@@ -47,6 +48,10 @@ async def query(body: QueryRequest, request: Request) -> dict:
             openclip=body.openclip, query_transformer=body.query_transformer,
             reranker_enabled=body.reranker_enabled,
         )
+    except QueryTransformerUnavailable as error:
+        raise HTTPException(status_code=503, detail=str(error)) from error
+    except QueryTransformerError as error:
+        raise HTTPException(status_code=502, detail=str(error)) from error
     except (ValueError, FileNotFoundError) as error:
         raise HTTPException(status_code=400, detail=str(error)) from error
     except Exception as error:

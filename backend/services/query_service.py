@@ -86,4 +86,7 @@ def execute_query(runtime: Runtime, query_type: str, query: str, *, top_k: int =
                 for row in rejected]
     return {"task_plan": plan.to_dict(), "event_results": public_events,
             "results": public_events[0].get("results", []) if public_events else [],
-            "trake_rows": rows, "trake_rejected": rejected}
+            "trake_rows": rows, "trake_rejected": rejected,
+            "query_transformer_used": bool(query_transformer and all(
+                result.get("query_plan", {}).get("transformer_used") for result in event_results)),
+            "query_transformer_available": engine.query_transformer.available}
