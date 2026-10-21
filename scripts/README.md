@@ -19,6 +19,8 @@
 - `gemini_batch_scenes.py` chuẩn bị scene request; `run_9router_enrichment.py` thực hiện remote VLM call.
 - `prepare_gemini_*` và `parse_gemini_*` giữ tên artifact/schema cũ nhưng được dùng cho cả response 9Router.
 - `build_unified_scene_documents.py`, `build_offline_hybrid_index.py`, `build_bge_m3_scene_index.py`, `build_openclip_frame_index.py`
+- `import_legacy_offline_index.py`: selectively imports an older index dump, regenerates its FTS database and OpenCLIP key sidecar, and omits stale backups/query caches.
+- `build_milvus_index.py`: builds compact Milvus Lite collections from imported or newly built vector artifacts.
 
 ## Validation và benchmark
 

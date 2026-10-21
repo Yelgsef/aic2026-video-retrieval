@@ -83,6 +83,10 @@ lại index; Milvus DB là derived artifact. Xem
 [`DATA_FLOW_AND_STORAGE.md`](DATA_FLOW_AND_STORAGE.md) để biết đầy đủ input/output
 theo stage.
 
+Để nhập index dump đời cũ, dùng `scripts/import_legacy_offline_index.py`; script
+chọn Parquet/vector cần cho serving, dựng lại FTS và OpenCLIP sidecar, rồi chạy
+`scripts/build_milvus_index.py` trên output.
+
 ### Flow C — truy vấn online
 
 `frontend/` gửi query tới `backend/`; backend nạp `OfflineSearchEngine`, Milvus

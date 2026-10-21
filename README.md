@@ -270,10 +270,10 @@ collection HNSW với metric COSINE. Mặc định tạo tối đa bảy collect
   `aic_bge_ocr_entities` cho bốn view văn bản BGE-M3.
 - `aic_frame_openclip` nếu ma trận OpenCLIP tồn tại.
 
-Scene collections lưu `row_id`, `document_id`, `video_id`, `scene_index` và
-thời gian. Frame collections lưu `frame_row`, `scene_row`, `video_id`,
-`frame_id` và `pts_time`. Giữ `scenes.parquet`, `frames.parquet` và các `.npy`
-đồng bộ với database; Milvus là index dẫn xuất có thể build lại. `--overwrite`
+Collections chỉ lưu primary `id` theo row trong Parquet và vector; backend nối
+hit về scene/frame metadata qua `scenes.parquet` và `frames.parquet`. Giữ hai
+Parquet cùng các `.npy` đồng bộ với database; Milvus là index dẫn xuất có thể
+build lại. `--overwrite`
 chỉ xóa và tạo lại collection có tiền tố đang chọn. Mặc định, nếu collection
 đã tồn tại thì script dừng để tránh ghi đè nhầm.
 
@@ -289,6 +289,18 @@ rồi ghi `milvus_report.json` gồm số lượng, chiều và recall từng co
 Query CLI và service đọc Milvus Lite để lấy top-k candidates cho SigLIP, BGE-M3
 và OpenCLIP; SQLite vẫn xử lý lexical/fuzzy search. Sau khi rebuild embedding
 artifact, cần chạy lại builder Milvus để cập nhật collections và report.
+
+Import dump index cũ chỉ giữ scene/frame Parquet và embedding matrices cần dùng,
+tạo lại SQLite FTS cùng OpenCLIP key sidecar, bỏ cache query và backup Parquet,
+rồi build Milvus:
+
+~~~bash
+uv run --project environments/siglip2 python scripts/import_legacy_offline_index.py \
+  --source /path/to/legacy/offline_index_all_873 \
+  --output workspace/offline_index_all_873
+uv run --project environments/siglip2 python scripts/build_milvus_index.py \
+  --index workspace/offline_index_all_873 --batch-size 512 --verify-samples 5
+~~~
 
 ## Bảo mật và bàn giao
 

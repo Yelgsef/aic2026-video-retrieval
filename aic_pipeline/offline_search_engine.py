@@ -148,8 +148,8 @@ class OfflineSearchEngine:
             dimensions[source] = dimension
         return dimensions
 
-    def _milvus_search(self, source: str, queries: np.ndarray, limit: int,
-                       output_fields: list[str] | None = None) -> list[list[dict[str, Any]]]:
+    def _milvus_search(self, source: str, queries: np.ndarray,
+                       limit: int) -> list[list[dict[str, Any]]]:
         collection = self.milvus_collections.get(source)
         if collection is None:
             return [[] for _ in queries]
@@ -162,7 +162,6 @@ class OfflineSearchEngine:
             search_params={"metric_type": "COSINE", "params": {
                 "ef": min(entity_count, 32768, max(64, limit))}},
             limit=limit,
-            output_fields=output_fields or [],
         )
 
     @staticmethod
@@ -244,9 +243,9 @@ class OfflineSearchEngine:
         best_frame_scores = np.full(len(self.scenes), -np.inf, dtype=np.float32)
         scene_candidates: list[list[tuple[float, int]]] = [[] for _ in range(len(self.scenes))]
         frame_limit = min(len(self.frames), 16384, max(100, candidate_k * 8))
-        results = self._milvus_search(
-            source, vectors, frame_limit,
-            ["video_id", "scene_row", "frame_id", "pts_time"])
+        results = self._milvus_search(source, vectors, frame_limit)
+        frame_scene_rows = self.frames.scene_row.to_numpy(dtype=np.int64)
+        frame_ids = self.frames.frame_id.to_numpy(dtype=np.int64)
         hit_scores: dict[int, float] = {}
         hit_scenes: dict[int, int] = {}
         hit_frames: dict[int, int] = {}
@@ -256,9 +255,8 @@ class OfflineSearchEngine:
                 if frame_row < 0 or frame_row >= len(self.frames):
                     raise ValueError(f"Milvus returned invalid frame_row {frame_row}")
                 score = float(hit["distance"])
-                entity = hit.get("entity", {})
-                scene_row = int(entity.get("scene_row", self.frames.iloc[frame_row].scene_row))
-                frame_id = int(entity.get("frame_id", self.frames.iloc[frame_row].frame_id))
+                scene_row = int(frame_scene_rows[frame_row])
+                frame_id = int(frame_ids[frame_row])
                 if score > hit_scores.get(frame_row, -np.inf):
                     hit_scores[frame_row] = score
                     hit_scenes[frame_row] = scene_row

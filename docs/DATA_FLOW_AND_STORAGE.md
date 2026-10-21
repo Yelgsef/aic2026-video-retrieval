@@ -233,15 +233,20 @@ Default output is `workspace/offline_index/`; production can build other named r
 
 `row_id`/array position is the canonical join for scene vectors; `scene_row` joins frame metadata to a scene. SQLite FTS uses one-based FTS rowids while its row lookup and NumPy/Parquet indices are zero-based; the search engine converts between them. Keep metadata and vector files from the same index build together.
 
-`scripts/build_milvus_index.py` is the final index step after the global index, BGE-M3 and optional OpenCLIP builders. It reads the existing `.npy` and Parquet files without recomputing embeddings. Scene vectors are split into `scene_siglip` and four BGE collections; frame vectors are split into `frame_siglip` and optional `frame_openclip`. If Gemini text vectors exist at build time, it also creates `gemini_text`. The builder creates HNSW indexes with COSINE distance, samples each collection and records recall against exact NumPy cosine search. Milvus is a derived ANN index; Parquet and NumPy remain its reproducible sources.
+`scripts/build_milvus_index.py` is the final index step after the global index, BGE-M3 and optional OpenCLIP builders. It reads the existing `.npy` and Parquet files without recomputing embeddings. Scene vectors are split into `scene_siglip` and four BGE collections; frame vectors are split into `frame_siglip` and optional `frame_openclip`. If Gemini text vectors exist at build time, it also creates `gemini_text`. Each collection stores only the Parquet row ID and vector; query results join IDs to scene/frame metadata through Parquet. The builder creates HNSW indexes with COSINE distance, samples each collection and records recall against exact NumPy cosine search. Milvus is a derived ANN index; Parquet and NumPy remain its reproducible sources.
+
+Legacy index dumps can be imported with `scripts/import_legacy_offline_index.py`.
+It copies only serving Parquet/vector artifacts, validates row alignment and
+finite vectors, creates the OpenCLIP key sidecar from `frames.parquet`, rebuilds
+`search.sqlite3`, and excludes stale backup files and the optional query cache.
 
 ## 4. Truy vấn online và dữ liệu runtime
 
 1. FE sends the selected task and query to `POST /api/query` or `/api/query/stream`.
 2. `OfflineSearchEngine.search` constructs query intent/variants, optionally expands with local Qwen, and retrieves top-k candidates from Milvus HNSW for SigLIP2, BGE-M3 and optional OpenCLIP. SQLite FTS/fuzzy search, object/spatial evidence and the reranker remain separate branches in score fusion.
-3. KIS returns ranked scenes/frames and a review pack. Optional moment refinement and TRAKE use dense stride-5 vectors in `workspace/features/google_siglip2_base_patch16_224/`.
+3. KIS returns ranked scenes/frames. Dense moment refinement is not currently wired into the API.
 4. QA retrieves scene/frame candidates; FE can send selected images to `/api/qa/answer` through Google AI Studio or 9Router.
-5. TRAKE retrieves each ordered event and aligns event frames chronologically inside the candidate video.
+5. TRAKE retrieves each ordered event and checks candidate frame order; dense temporal alignment is not currently wired into the API.
 6. The service returns JSON; the frontend displays results and serves media from the same backend.
 
 Runtime storage:
