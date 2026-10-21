@@ -22,7 +22,6 @@ hoặc object storage, không được commit cùng source code.
 | `archive/` | Một số artifact/feature cũ được lưu để tham chiếu; không phải output mặc định của flow hiện tại. |
 | `models/`, `weights/` | Checkpoint tải hoặc chuẩn bị cục bộ; không commit. |
 | `workspace/` | Manifest, intermediate artifacts, embeddings, scene documents, index, cache và scheduler state; không commit. |
-| `web/` | Giao diện cũ với API contract trước lần tách frontend/backend; Flow C hiện chạy `frontend/`. |
 
 Không commit `.env`, dữ liệu video, model weights, `workspace/` hoặc index database.
 Không xóa scheduler SQLite nếu cần resume các job.
