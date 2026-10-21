@@ -1,10 +1,8 @@
-// Sends QA requests to the Python backend. The backend calls Google AI
-// Studio; 9Router is reserved in Settings for a later implementation.
+// Sends QA requests to the Python backend, which adapts the selected provider.
 
 export async function askGeminiWithImages(server, settings, question, images) {
   const provider = settings.provider
   const apiKey = provider === '9router' ? settings.router9ApiKey : settings.aiStudioApiKey
-  if (provider === '9router') return { ok: false, error: '9Router is not implemented yet. Select AI Studio in Settings.' }
   if (!settings.model.trim()) return { ok: false, error: 'LLM model is not configured.' }
 
   try {

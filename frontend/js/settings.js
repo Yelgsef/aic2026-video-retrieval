@@ -21,10 +21,10 @@ function defaultServer() {
 }
 
 export const DEFAULT_LLM_SETTINGS = {
-  provider: 'ai_studio',
+  provider: '9router',
   aiStudioApiKey: '',
   router9ApiKey: '',
-  model: 'gemini-2.5-flash',
+  model: 'ag/gemini-3.8-flash-medium',
   systemPrompt:
     'Bạn là trợ lý hỏi đáp hình ảnh cho hệ thống truy xuất video. Bạn nhận được một keyframe ' +
     'và một câu hỏi. Hãy trả lời ngắn gọn, trực tiếp bằng tiếng Việt, chỉ dựa trên nội dung ' +

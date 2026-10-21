@@ -6,7 +6,7 @@ import { runQuery, runQueryStream } from './api.js?v=20260828-ranking-controls'
 import { parseQueryResult } from './parseResult.js?v=20260828-ranking-controls'
 import { settings } from './settings.js?v=20260828-ranking-controls'
 import { extractFrame } from './frameExtractor.js?v=20260828-ranking-controls'
-import { askGeminiWithImages, listAiStudioModels } from './geminiClient.js?v=20260828-ranking-controls'
+import { askGeminiWithImages, listAiStudioModels } from './geminiClient.js?v=20261021-9router-qa'
 import { appendGridCandidates, renderGrid, renderGridSkeleton, updateGridAnswer, updateGridMeta } from './resultGrid.js?v=20260828-ranking-controls'
 import { setupDetailModal } from './detailModal.js?v=20260907-frame-export'
 import { appendRejectedTrakeRow, appendTrakeStreamRow, finishTrakeStream, renderTrakeStreamStart } from './trakeRows.js?v=20260828-ranking-controls'
@@ -428,7 +428,7 @@ function setupQaPanel(modal) {
     if (llmRunning) return
     if (!settings.isLlmConfigured) {
       askError.hidden = false
-      askError.textContent = 'Select AI Studio and configure its model in Settings first.'
+      askError.textContent = 'Chọn provider và cấu hình model trong Settings trước.'
       return
     }
     if (!lastQuery) return
@@ -664,7 +664,9 @@ function setupSettingsPanel(onServersChanged) {
     systemPromptInput.value = settings.llm.systemPrompt
     aiStudioKeyStatus.textContent = settings.llm.aiStudioApiKey ? 'API key đã được đọc từ localStorage của website này.' : 'Chưa có key trong localStorage; backend sẽ dùng AI_STUDIO_API_KEY nếu đã cấu hình.'
     router9KeyStatus.textContent = settings.llm.router9ApiKey ? 'API key đã được đọc từ localStorage của website này.' : 'Chưa có key trong localStorage; backend sẽ dùng NINEROUTER_KEY nếu đã cấu hình.'
-    if (settings.llm.aiStudioApiKey) modelStatus.textContent = 'AI Studio API key đã lưu. Bấm Load models để tải danh sách.'
+    modelStatus.textContent = settings.llm.provider === '9router'
+      ? 'Đang dùng 9Router. Bấm Load models để tải danh sách từ endpoint đã cấu hình ở backend.'
+      : 'Nhập AI Studio API key, sau đó bấm Load models.'
   }
 
   providerInputs.forEach((input) => input.addEventListener('change', () => {
@@ -720,7 +722,7 @@ function setupSettingsPanel(onServersChanged) {
     if (!result.ok) {
       modelStatus.textContent = result.error
     } else if (!result.models.length) {
-      modelStatus.textContent = 'No models supporting generateContent were returned.'
+      modelStatus.textContent = `Không tìm thấy model từ ${provider === '9router' ? '9Router' : 'Google AI Studio'}.`
     } else {
       modelInput.replaceChildren()
       for (const model of result.models) {
@@ -734,7 +736,7 @@ function setupSettingsPanel(onServersChanged) {
       settings.llm.model = available ? settings.llm.model : result.models[0].id
       modelInput.value = settings.llm.model
       settings.persistLlm()
-      modelStatus.textContent = `${result.models.length} generateContent model(s) available.`
+      modelStatus.textContent = `Đã tải ${result.models.length} model từ ${provider === '9router' ? '9Router' : 'Google AI Studio'}.`
     }
     modelRefresh.disabled = false
     modelRefresh.textContent = 'Reload models'

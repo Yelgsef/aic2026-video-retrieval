@@ -132,7 +132,7 @@
             <div class="qa-ask__info">
               <p id="qa-ask__count"></p>
               <p id="qa-ask__llm-warning" class="qa-ask__warning" hidden>
-                LLM is not configured yet — select AI Studio and add its API key and model in Settings.
+                LLM chưa được cấu hình — chọn provider và model trong Settings.
               </p>
             </div>
             <button type="button" class="btn-primary" id="qa-ask__button">Ask LLM about these frames</button>
@@ -217,7 +217,7 @@
             </label>
             <label class="llm-provider-option">
               <input id="llm-provider-9router" type="checkbox" name="llm-provider" value="9router" />
-              <span><strong>9Router</strong><small>Chưa triển khai</small></span>
+              <span><strong>9Router</strong><small>Python backend gọi OpenAI-compatible API</small></span>
             </label>
           </div>
 
@@ -246,7 +246,7 @@
                 <select id="llm-model" class="text-input" aria-describedby="llm-model-status"></select>
                 <button type="button" class="btn-secondary" id="llm-model-refresh">Load models</button>
               </div>
-              <p class="field-help" id="llm-model-status">Enter an AI Studio API key, then load available models.</p>
+              <p class="field-help" id="llm-model-status">Chọn provider, sau đó bấm Load models để tải danh sách model.</p>
             </div>
             <div class="field-group">
               <label for="llm-max-images" class="field-label">Max images per question</label>
